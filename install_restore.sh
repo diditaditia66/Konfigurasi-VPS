@@ -59,6 +59,15 @@ enable_and_start(){
   if systemctl is-active --quiet "$svc"; then ok "Service $svc aktif"; else err "Service $svc TIDAK aktif"; fi
 }
 
+ensure_line_in_file(){
+  # ensure_line_in_file "file" "regex-to-detect" "line-to-append-if-missing"
+  local f="$1" re="$2" line="$3"
+  [[ -f "$f" ]] || touch "$f"
+  if ! grep -Eq "$re" "$f"; then
+    echo "$line" >> "$f"
+  fi
+}
+
 # ======== Paket dasar ========
 log "Install paket dasar…"
 aptx ca-certificates curl wget gnupg lsb-release jq git unzip tar sudo ufw socat rsync net-tools openssl \
@@ -124,6 +133,7 @@ fi
 mkdir -p /etc/xray
 echo "$VPN_DOMAIN" >/etc/xray/domain
 echo "$VPN_DOMAIN" >/etc/xray/scdomain 2>/dev/null || true
+# symlink akan valid setelah certbot selesai (diulang lagi di bawah)
 ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem" "/etc/xray/xray.crt" || true
 ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem"  "/etc/xray/xray.key" || true
 if [[ -f "$ETC_DIR/xray/config.json" ]]; then
@@ -136,22 +146,34 @@ else
 fi
 [[ -f "$SYSTEMD_DIR/xray.service" ]] && cp -f "$SYSTEMD_DIR/xray.service" /etc/systemd/system/xray.service
 
-# ======== Certbot dua domain (standalone) ========
-log "Issue sertifikat TLS untuk Panel & VPN…"
+# ======== Certbot dua sertifikat TERPISAH (standalone) ========
+log "Issue sertifikat TLS untuk Panel & VPN (terpisah)…"
 systemctl stop nginx xray stunnel4 || true
 sleep 1
-certbot certonly --standalone -d "$PANEL_DOMAIN" -d "$VPN_DOMAIN" -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot gagal — bisa coba ulang manual"
+certbot certonly --standalone -d "$PANEL_DOMAIN" -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot PANEL gagal — bisa ulang manual"
+certbot certonly --standalone -d "$VPN_DOMAIN"   -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot VPN gagal — bisa ulang manual"
+systemctl enable certbot.timer >/dev/null 2>&1 || true
 systemctl start nginx stunnel4 || true
+
+# Pastikan stunnel pakai cert VPN
+sed -i "s#^cert *=.*#cert = /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem#" /etc/stunnel/stunnel.conf || true
+sed -i "s#^key *=.*#key  = /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem#"  /etc/stunnel/stunnel.conf || true
+
+# Perbarui symlink Xray ke cert VPN (pastikan ada)
+ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem" "/etc/xray/xray.crt"
+ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem"  "/etc/xray/xray.key"
 
 # ======== NGINX Xray & Panel ========
 log "Terapkan konfigurasi NGINX (Xray & Panel)…"
 mkdir -p /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled
 
-# Xray vhost
+# Xray vhost (pakai cert VPN)
 if [[ -f "$ETC_DIR/nginx/conf.d/xray.conf" ]]; then
   cp -f "$ETC_DIR/nginx/conf.d/xray.conf" /etc/nginx/conf.d/xray.conf
   sed -i "s/sgdo\.anya-vpn\.my\.id/$VPN_DOMAIN/g" /etc/nginx/conf.d/xray.conf || true
   sed -i "s/server_name .*/server_name $VPN_DOMAIN *.$VPN_DOMAIN;/" /etc/nginx/conf.d/xray.conf || true
+  sed -i "s#ssl_certificate_key .*#ssl_certificate_key /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem;#" /etc/nginx/conf.d/xray.conf || true
+  sed -i "s#ssl_certificate .*#ssl_certificate     /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem;#" /etc/nginx/conf.d/xray.conf || true
 else
   cat >/etc/nginx/conf.d/xray.conf <<EOF
 server {
@@ -194,7 +216,27 @@ server {
 EOF
 fi
 
-# Panel vhost
+# Tambah lokasi WebSocket SSH melalui NGINX → /ssh-ws -> 127.0.0.1:2095
+if ! grep -q "location /ssh-ws" /etc/nginx/conf.d/xray.conf; then
+  # selipkan sebelum '}' penutup pertama dari server block
+  awk '
+  BEGIN{inserted=0}
+  /server_name/ && /'"$VPN_DOMAIN"'/ { in_server=1 }
+  in_server && /}/ && !inserted {
+    print "    location /ssh-ws {"
+    print "        proxy_pass http://127.0.0.1:2095;"
+    print "        proxy_http_version 1.1;"
+    print "        proxy_set_header Upgrade $http_upgrade;"
+    print "        proxy_set_header Connection \"upgrade\";"
+    print "        proxy_set_header Host $host;"
+    print "    }"
+    inserted=1
+  }
+  { print }
+  ' /etc/nginx/conf.d/xray.conf > /etc/nginx/conf.d/xray.conf.new && mv /etc/nginx/conf.d/xray.conf.new /etc/nginx/conf.d/xray.conf
+fi
+
+# Panel vhost (pakai cert PANEL)
 cat >/etc/nginx/sites-available/cartenz-panel.conf <<EOF
 server {
     listen 80;
@@ -225,19 +267,21 @@ ln -sf /etc/nginx/sites-available/cartenz-panel.conf /etc/nginx/sites-enabled/ca
 rm -f /etc/nginx/sites-enabled/cartenz-bootstrap.conf || true
 nginx -t && enable_and_start nginx
 
-# ======== WS-Stunnel (fallback socat jika unit tidak ada) ========
+# ======== WS-Stunnel (listen 2095 agar tidak bentrok NGINX) ========
 log "Siapkan SSH over WebSocket (ws-stunnel)…"
 if [[ -f "$SYSTEMD_DIR/ws-stunnel.service" ]]; then
+  # paksa ganti ke 2095 jika filemu lama masih 80
+  sed -i 's/TCP-LISTEN:80/TCP-LISTEN:2095/g' "$SYSTEMD_DIR/ws-stunnel.service" || true
   cp -f "$SYSTEMD_DIR/ws-stunnel.service" /etc/systemd/system/ws-stunnel.service
 else
   cat >/etc/systemd/system/ws-stunnel.service <<'EOF'
 [Unit]
-Description=SSH Over Websocket
+Description=SSH Over Websocket (via socat 2095)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/socat TCP-LISTEN:80,reuseaddr,fork TCP:127.0.0.1:22
+ExecStart=/usr/bin/socat TCP-LISTEN:2095,reuseaddr,fork TCP:127.0.0.1:22
 Restart=always
 RestartSec=3
 
@@ -248,7 +292,7 @@ fi
 
 # Restore systemd lain dari repo (opsional: ws-dropbear, telebot, dll)
 if compgen -G "$SYSTEMD_DIR/*.service" >/dev/null 2>&1; then
-  cp -f "$SYSTEMD_DIR/"*.service /etc/systemd/system/
+  cp -f "$SYSTEMD_DIR/"*.service /etc/systemd/system/ || true
 fi
 systemctl daemon-reload
 
@@ -291,7 +335,7 @@ if grep -q 'SESSION_SECRET=$' /etc/systemd/system/cartenz-panel.service; then
   sed -i "s|SESSION_SECRET=$|SESSION_SECRET=$(openssl rand -hex 32)|" /etc/systemd/system/cartenz-panel.service
 fi
 
-# install deps panel
+# install deps panel (hanya jika ada)
 if [[ -f /opt/cartenz-panel/package.json ]]; then
   (cd /opt/cartenz-panel && npm ci --omit=dev || npm install --omit=dev)
 fi
@@ -303,6 +347,8 @@ fi
 log "Menyalin skrip ke /usr/bin…"
 if [[ -d "$SCRIPT_DIR" ]]; then
   install -m 0755 -D "$SCRIPT_DIR/"* /usr/bin/
+  # yakinkan menu executable
+  [[ -f /usr/bin/menu ]] && chmod +x /usr/bin/menu || warn "menu tidak ditemukan di scripts/ — lewati"
 else
   warn "Folder scripts/ tidak ditemukan."
 fi
@@ -315,7 +361,8 @@ ufw allow 80,443/tcp || true
 ufw allow 109,143/tcp || true
 ufw allow 8080/tcp || true
 ufw allow 10000:10005/tcp || true
-ufw allow 7100:7900/udp || true   # UDPGW range (kalau dipakai)
+ufw allow 2095/tcp || true           # ws-stunnel
+ufw allow 7100:7900/udp || true      # UDPGW range (opsional)
 ufw --force enable || true
 
 # ======== Start semua service utama ========
@@ -354,13 +401,15 @@ done
 echo
 echo -e "${G}Panel URL : https://$PANEL_DOMAIN${C0}"
 echo -e "${G}VPN Host  : $VPN_DOMAIN${C0}"
-echo -e "${Y}Jika issuance TLS gagal, ulang manual:\n  systemctl stop nginx xray stunnel4 && certbot certonly --standalone -d $PANEL_DOMAIN -d $VPN_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && systemctl start nginx stunnel4 xray${C0}"
+echo -e "${Y}Jika issuance TLS gagal, ulang manual:\n  systemctl stop nginx xray stunnel4 && certbot certonly --standalone -d $PANEL_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && certbot certonly --standalone -d $VPN_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && systemctl start nginx stunnel4 xray${C0}"
 echo
 
 # ======== Simpan catatan & Reboot ========
-echo "Cartenz Install — $(date)" > "$LOG_FILE"
-echo "Panel: https://${PANEL_DOMAIN}" >> "$LOG_FILE"
-echo "VPN  : ${VPN_DOMAIN}" >> "$LOG_FILE"
+{
+  echo "Cartenz Install — $(date)"
+  echo "Panel: https://${PANEL_DOMAIN}"
+  echo "VPN  : ${VPN_DOMAIN}"
+} > "$LOG_FILE"
 
 echo -e "${W}Reboot VPS untuk finalisasi. Setelah login, menu akan tampil otomatis.${C0}"
 sleep 3
