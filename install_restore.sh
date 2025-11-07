@@ -1,96 +1,94 @@
 #!/usr/bin/env bash
-# install_restore.sh — Cartenz VPN Premium (Konfigurasi-VPS-Baru)
-# Restore & install semua layanan, issue TLS dua domain, start service, set auto-menu, reboot
-# Dites: Ubuntu 20.04/22.04/24.04, Debian 11/12
+# ------------------------------------------------------------------------------
+#  install_restore.sh — Cartenz VPN Premium (Extended, aligned with upstream)
+#  Tujuan: Menyamakan instalasi & port dengan setup.sh upstream secara presisi:
+#   - OpenSSH 22
+#   - SSH WebSocket 80 / 443
+#   - Stunnel4 222, 777  (TIDAK pakai 443)
+#   - Dropbear 109, 143
+#   - Nginx 81
+#   - Badvpn UDP 7100–7900
+#   - XRAY WS 80/443 + gRPC 443
+#   - IPSec + SSTP
+#  Fitur: domain random/manual, cleanup konfigurasi lama, firewall, auto-menu,
+#         health checks, dan output ringkasan.
+# ------------------------------------------------------------------------------
 
 set -euo pipefail
 IFS=$'\n\t'
 export DEBIAN_FRONTEND=noninteractive
 
-# ======== UI ========
-C0='\033[0m'; R='\033[31m'; G='\033[32m'; Y='\033[33m'; B='\033[34m'; C='\033[36m'; W='\033[97m'
+# ======== UI & LOG ========
+C0='\033[0m'; R='\033[31m'; G='\033[32m'; Y='\033[33m'; C='\033[36m'; W='\033[97m'
 log(){ echo -e "${C}[*]${C0} $*"; }
 ok(){ echo -e "${G}[OK]${C0} $*"; }
 warn(){ echo -e "${Y}[WARN]${C0} $*"; }
 err(){ echo -e "${R}[ERR]${C0} $*" >&2; }
+TRAP_CLEANUP(){ warn "Terjadi error pada baris $1. Lihat log jika ada."; }
+trap 'TRAP_CLEANUP $LINENO' ERR
+
+LOG_FILE="/root/log-install.txt"
+touch "$LOG_FILE"
 
 # ======== Guard & OS ========
 [[ $EUID -eq 0 ]] || { err "Jalankan sebagai root"; exit 1; }
 if [[ -f /etc/os-release ]]; then . /etc/os-release; ok "OS: $PRETTY_NAME"; fi
-
-# ======== Path Repo ========
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ETC_DIR="$REPO_ROOT/etc"
-SCRIPT_DIR="$REPO_ROOT/scripts"
-SYSTEMD_DIR="$REPO_ROOT/systemd"
-PANEL_DIR="$REPO_ROOT/opt/cartenz-panel"
-FIREWALL_DIR="$REPO_ROOT/firewall"
-LOG_FILE="/root/log-install.txt"
-
-# ======== Input ========
-ask(){
-  local p="$1" def="${2:-}" v;
-  if [[ -n "${def}" ]]; then read -rp "$p [$def]: " v; v="${v:-$def}";
-  else read -rp "$p: " v; fi
-  echo "$v"
-}
-PANEL_DOMAIN="${PANEL_DOMAIN:-}"
-VPN_DOMAIN="${VPN_DOMAIN:-}"
-CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
-
-if [[ -z "$PANEL_DOMAIN" || -z "$VPN_DOMAIN" ]]; then
-  echo -e "${W}=== Pengaturan Domain ===${C0}"
-  [[ -z "$PANEL_DOMAIN" ]] && PANEL_DOMAIN="$(ask 'Domain Panel (mis: panel.cartenz-vpn.my.id)')"
-  [[ -z "$VPN_DOMAIN"   ]] && VPN_DOMAIN="$(ask 'Domain VPN (mis: vpn.cartenz-vpn.my.id)')"
-fi
-[[ -z "$CERTBOT_EMAIL" ]] && CERTBOT_EMAIL="$(ask "Email Certbot" "admin@${VPN_DOMAIN}")"
-
-ok "Panel domain: $PANEL_DOMAIN"
-ok "VPN domain  : $VPN_DOMAIN"
-ok "Email       : $CERTBOT_EMAIL"
+command -v systemd-detect-virt >/dev/null && [[ "$(systemd-detect-virt)" == "openvz" ]] && { err "OpenVZ tidak didukung"; exit 1; }
 
 # ======== Util ========
 aptx(){ apt-get update -y; apt-get install -y --no-install-recommends "$@"; }
-enable_and_start(){
-  local svc="$1"
-  systemctl daemon-reload
-  systemctl enable "$svc" >/dev/null 2>&1 || true
-  systemctl restart "$svc" || systemctl start "$svc" || true
-  if systemctl is-active --quiet "$svc"; then ok "Service $svc aktif"; else err "Service $svc TIDAK aktif"; fi
+svc_on(){
+  local s="$1"
+  systemctl daemon-reload || true
+  systemctl enable "$s" >/dev/null 2>&1 || true
+  systemctl restart "$s" || systemctl start "$s" || true
+  if systemctl is-active --quiet "$s"; then ok "Service $s aktif"; else err "Service $s TIDAK aktif"; fi
 }
+file_has(){ local f="$1" p="$2"; [[ -f "$f" ]] && grep -qE "$p" "$f"; }
 
-ensure_line_in_file(){
-  # ensure_line_in_file "file" "regex-to-detect" "line-to-append-if-missing"
-  local f="$1" re="$2" line="$3"
-  [[ -f "$f" ]] || touch "$f"
-  if ! grep -Eq "$re" "$f"; then
-    echo "$line" >> "$f"
-  fi
-}
+# ======== Domain ========
+echo -e "${W}=== Pengaturan Domain ===${C0}"
+echo "1) Domain Random (Cloudflare API vendor)"
+echo "2) Masukkan Domain sendiri"
+read -rp "Pilih [1/2]: " DNS_OPT
+
+mkdir -p /etc/xray /etc/v2ray
+: > /etc/xray/domain
+: > /etc/v2ray/domain
+: > /etc/xray/scdomain
+: > /etc/v2ray/scdomain
+
+if [[ "${DNS_OPT}" == "1" ]]; then
+  log "Generate domain random via vendor…"
+  curl -fsSL https://autoscript.caliphdev.com/ssh/cf.sh | bash
+  DOMAIN="$(cat /etc/xray/domain 2>/dev/null || true)"
+  [[ -n "${DOMAIN:-}" ]] || { err "Gagal mendapatkan domain dari vendor"; exit 1; }
+else
+  read -rp "Masukkan domain (contoh: vpn.example.com): " DOMAIN
+  [[ -n "${DOMAIN}" ]] || { err "Domain kosong"; exit 1; }
+  echo "IP=${DOMAIN}" > /var/lib/ipvps.conf
+  for f in /root/scdomain /etc/xray/scdomain /etc/xray/domain /etc/v2ray/domain /root/domain; do
+    echo "${DOMAIN}" > "$f"
+  done
+fi
+ok "Domain VPN: $DOMAIN"
 
 # ======== Paket dasar ========
 log "Install paket dasar…"
-aptx ca-certificates curl wget gnupg lsb-release jq git unzip tar sudo ufw socat rsync net-tools openssl \
-    nginx dropbear stunnel4 certbot python3-certbot-nginx nodejs npm
+aptx curl wget git jq tar unzip rsync gnupg ca-certificates lsb-release net-tools ufw neofetch nginx dropbear stunnel4
 
-# ======== NGINX bootstrap untuk HTTP-01 ========
-log "Siapkan nginx bootstrap (80) untuk validasi ACME…"
-mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /var/www/html
-cat >/etc/nginx/sites-available/cartenz-bootstrap.conf <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $PANEL_DOMAIN $VPN_DOMAIN;
-    location /.well-known/acme-challenge/ { root /var/www/html; }
-    location / { return 200 "Cartenz bootstrap OK\n"; }
-}
-EOF
-ln -sf /etc/nginx/sites-available/cartenz-bootstrap.conf /etc/nginx/sites-enabled/cartenz-bootstrap.conf
-rm -f /etc/nginx/sites-enabled/default || true
-nginx -t && enable_and_start nginx
+# ======== Cleanup konflik lama ========
+log "Membersihkan konfigurasi & layanan lama…"
+systemctl stop nginx stunnel4 xray ws-stunnel cartenz-panel 2>/dev/null || true
+rm -f /etc/nginx/conf.d/xray.conf 2>/dev/null || true
+rm -f /etc/nginx/sites-enabled/xray.conf 2>/dev/null || true
+rm -f /etc/systemd/system/ws-stunnel.service 2>/dev/null || true
+# Optional: hapus vhost panel lama yang pakai 443 supaya 80/443 bebas
+rm -f /etc/nginx/sites-enabled/cartenz-panel.conf 2>/dev/null || true
+systemctl daemon-reload || true
 
-# ======== Dropbear ========
-log "Konfigurasi Dropbear…"
+# ======== Dropbear (seed, nanti vendor tambahkan 143 juga) ========
+log "Konfigurasi Dropbear (seed port 109)…"
 if [[ -f /etc/default/dropbear ]]; then
   sed -i 's/^NO_START=.*/NO_START=0/' /etc/default/dropbear || true
   if grep -q '^DROPBEAR_PORT=' /etc/default/dropbear; then
@@ -105,312 +103,119 @@ DROPBEAR_PORT=109
 DROPBEAR_EXTRA_ARGS="-w"
 EOF
 fi
-enable_and_start dropbear
+svc_on dropbear
 
-# ======== Stunnel ========
-log "Konfigurasi Stunnel…"
+# ======== Stunnel — PASTIKAN 222 & 777 (bukan 443) ========
+log "Set Stunnel pada port 222 & 777…"
 mkdir -p /etc/stunnel
-if [[ -f "$ETC_DIR/stunnel/stunnel.conf" ]]; then
-  cp -f "$ETC_DIR/stunnel/stunnel.conf" /etc/stunnel/stunnel.conf
-else
-  cat >/etc/stunnel/stunnel.conf <<EOF
-foreground = yes
+cat >/etc/stunnel/stunnel.conf <<'EOF'
+foreground = no
 pid = /var/run/stunnel4/stunnel.pid
-[stunnel-ssh]
-accept = 443
+setuid = stunnel4
+setgid = stunnel4
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+# Snakeoil cert cukup, upstream tidak pakai 443 untuk stunnel
+cert = /etc/ssl/certs/ssl-cert-snakeoil.pem
+key  = /etc/ssl/private/ssl-cert-snakeoil.key
+
+[stunnel-ssh-222]
+accept = 222
 connect = 127.0.0.1:22
-cert = /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem
-key  = /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem
+
+[stunnel-ssh-777]
+accept = 777
+connect = 127.0.0.1:22
 EOF
-fi
 sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
+svc_on stunnel4
 
-# ======== Xray ========
-log "Install & setup Xray…"
-if ! command -v xray >/dev/null 2>&1; then
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ install
-fi
-mkdir -p /etc/xray
-echo "$VPN_DOMAIN" >/etc/xray/domain
-echo "$VPN_DOMAIN" >/etc/xray/scdomain 2>/dev/null || true
-# symlink akan valid setelah certbot selesai (diulang lagi di bawah)
-ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem" "/etc/xray/xray.crt" || true
-ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem"  "/etc/xray/xray.key" || true
-if [[ -f "$ETC_DIR/xray/config.json" ]]; then
-  cp -f "$ETC_DIR/xray/config.json" /etc/xray/config.json
-  sed -i "s/sgdo\.anya-vpn\.my\.id/$VPN_DOMAIN/g" /etc/xray/config.json || true
-  sed -i "s/domain_placeholder/$VPN_DOMAIN/g" /etc/xray/config.json || true
-else
-  warn "etc/xray/config.json tidak ditemukan — gunakan bawaan installer bila ada."
-  [[ -f /usr/local/etc/xray/config.json ]] && cp -f /usr/local/etc/xray/config.json /etc/xray/config.json || true
-fi
-[[ -f "$SYSTEMD_DIR/xray.service" ]] && cp -f "$SYSTEMD_DIR/xray.service" /etc/systemd/system/xray.service
-
-# ======== Certbot dua sertifikat TERPISAH (standalone) ========
-log "Issue sertifikat TLS untuk Panel & VPN (terpisah)…"
-systemctl stop nginx xray stunnel4 || true
-sleep 1
-certbot certonly --standalone -d "$PANEL_DOMAIN" -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot PANEL gagal — bisa ulang manual"
-certbot certonly --standalone -d "$VPN_DOMAIN"   -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot VPN gagal — bisa ulang manual"
-systemctl enable certbot.timer >/dev/null 2>&1 || true
-systemctl start nginx stunnel4 || true
-
-# Pastikan stunnel pakai cert VPN
-sed -i "s#^cert *=.*#cert = /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem#" /etc/stunnel/stunnel.conf || true
-sed -i "s#^key *=.*#key  = /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem#"  /etc/stunnel/stunnel.conf || true
-
-# Perbarui symlink Xray ke cert VPN (pastikan ada)
-ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem" "/etc/xray/xray.crt"
-ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem"  "/etc/xray/xray.key"
-
-# ======== NGINX Xray & Panel ========
-log "Terapkan konfigurasi NGINX (Xray & Panel)…"
-mkdir -p /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-# Xray vhost (pakai cert VPN)
-if [[ -f "$ETC_DIR/nginx/conf.d/xray.conf" ]]; then
-  cp -f "$ETC_DIR/nginx/conf.d/xray.conf" /etc/nginx/conf.d/xray.conf
-  sed -i "s/sgdo\.anya-vpn\.my\.id/$VPN_DOMAIN/g" /etc/nginx/conf.d/xray.conf || true
-  sed -i "s/server_name .*/server_name $VPN_DOMAIN *.$VPN_DOMAIN;/" /etc/nginx/conf.d/xray.conf || true
-  sed -i "s#ssl_certificate_key .*#ssl_certificate_key /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem;#" /etc/nginx/conf.d/xray.conf || true
-  sed -i "s#ssl_certificate .*#ssl_certificate     /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem;#" /etc/nginx/conf.d/xray.conf || true
-else
-  cat >/etc/nginx/conf.d/xray.conf <<EOF
+# ======== NGINX panel di 81 (sesuai upstream) ========
+log "Siapkan Nginx untuk panel di port 81…"
+mkdir -p /var/www/html
+[[ -f /var/www/html/index.html ]] || echo "<h1>Cartenz Panel on :81</h1>" >/var/www/html/index.html
+cat >/etc/nginx/sites-available/panel-81.conf <<'EOF'
 server {
-    listen 443 ssl http2;
-    listen [::]:443 http2;
-    server_name $VPN_DOMAIN *.$VPN_DOMAIN;
-
-    ssl_certificate     /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem;
-
-    location /vmess {
-        proxy_pass http://127.0.0.1:10000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
-    location /vless {
-        proxy_pass http://127.0.0.1:10001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
-    location /trojan-ws {
-        proxy_pass http://127.0.0.1:10002;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
-    location /ss-ws {
-        proxy_pass http://127.0.0.1:10003;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
+    listen 81;
+    listen [::]:81;
+    server_name _;
+    root /var/www/html;
+    index index.html index.htm;
 }
 EOF
-fi
+ln -sf /etc/nginx/sites-available/panel-81.conf /etc/nginx/sites-enabled/panel-81.conf
+rm -f /etc/nginx/sites-enabled/default || true
+nginx -t && systemctl restart nginx || true
+systemctl is-active --quiet nginx && ok "nginx aktif (port 81)" || warn "nginx belum aktif"
 
-# Tambah lokasi WebSocket SSH melalui NGINX → /ssh-ws -> 127.0.0.1:2095
-if ! grep -q "location /ssh-ws" /etc/nginx/conf.d/xray.conf; then
-  # selipkan sebelum '}' penutup pertama dari server block
-  awk '
-  BEGIN{inserted=0}
-  /server_name/ && /'"$VPN_DOMAIN"'/ { in_server=1 }
-  in_server && /}/ && !inserted {
-    print "    location /ssh-ws {"
-    print "        proxy_pass http://127.0.0.1:2095;"
-    print "        proxy_http_version 1.1;"
-    print "        proxy_set_header Upgrade $http_upgrade;"
-    print "        proxy_set_header Connection \"upgrade\";"
-    print "        proxy_set_header Host $host;"
-    print "    }"
-    inserted=1
-  }
-  { print }
-  ' /etc/nginx/conf.d/xray.conf > /etc/nginx/conf.d/xray.conf.new && mv /etc/nginx/conf.d/xray.conf.new /etc/nginx/conf.d/xray.conf
-fi
+# ======== Jalankan installer vendor (persis upstream) ========
+log "Install SSH/VPN (vendor)…"
+cd /root
+wget -q https://autoscript.caliphdev.com/ssh/ssh-vpn.sh && chmod +x ssh-vpn.sh && ./ssh-vpn.sh
 
-# Panel vhost (pakai cert PANEL)
-cat >/etc/nginx/sites-available/cartenz-panel.conf <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $PANEL_DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-server {
-    listen 443 ssl http2;
-    listen [::]:443 http2;
-    server_name $PANEL_DOMAIN;
+log "Install XRAY (vendor)…"
+wget -q https://autoscript.caliphdev.com/xray/ins-xray.sh && chmod +x ins-xray.sh && ./ins-xray.sh
 
-    ssl_certificate     /etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem;
+log "Install SSH-WS (vendor)…"
+wget -q https://autoscript.caliphdev.com/sshws/insshws.sh && chmod +x insshws.sh && ./insshws.sh
 
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-}
+log "Install IPSec & SSTP (vendor)…"
+wget -q https://autoscript.caliphdev.com/ipsec/ipsec.sh && chmod +x ipsec.sh && ./ipsec.sh
+wget -q https://autoscript.caliphdev.com/sstp/sstp.sh && chmod +x sstp.sh && ./sstp.sh
+
+# ======== Auto MENU saat login root (upstream style) ========
+log "Aktifkan auto-menu saat login…"
+cat >/root/.profile <<'EOF'
+if [ "$BASH" ] && [ -f ~/.bashrc ]; then . ~/.bashrc; fi
+mesg n || true
+clear
+neofetch
+echo "Type 'menu' to display the vpn menu"
 EOF
-ln -sf /etc/nginx/sites-available/cartenz-panel.conf /etc/nginx/sites-enabled/cartenz-panel.conf
-rm -f /etc/nginx/sites-enabled/cartenz-bootstrap.conf || true
-nginx -t && enable_and_start nginx
+chmod 644 /root/.profile
 
-# ======== WS-Stunnel (listen 2095 agar tidak bentrok NGINX) ========
-log "Siapkan SSH over WebSocket (ws-stunnel)…"
-if [[ -f "$SYSTEMD_DIR/ws-stunnel.service" ]]; then
-  # paksa ganti ke 2095 jika filemu lama masih 80
-  sed -i 's/TCP-LISTEN:80/TCP-LISTEN:2095/g' "$SYSTEMD_DIR/ws-stunnel.service" || true
-  cp -f "$SYSTEMD_DIR/ws-stunnel.service" /etc/systemd/system/ws-stunnel.service
-else
-  cat >/etc/systemd/system/ws-stunnel.service <<'EOF'
-[Unit]
-Description=SSH Over Websocket (via socat 2095)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/socat TCP-LISTEN:2095,reuseaddr,fork TCP:127.0.0.1:22
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-fi
-
-# Restore systemd lain dari repo (opsional: ws-dropbear, telebot, dll)
-if compgen -G "$SYSTEMD_DIR/*.service" >/dev/null 2>&1; then
-  cp -f "$SYSTEMD_DIR/"*.service /etc/systemd/system/ || true
-fi
-systemctl daemon-reload
-
-# ======== Panel (Node.js) ========
-log "Deploy Cartenz Panel…"
-mkdir -p /opt/cartenz-panel
-if [[ -d "$PANEL_DIR" ]]; then
-  rsync -a --delete "$PANEL_DIR"/ /opt/cartenz-panel/
-else
-  warn "Folder panel tidak ditemukan di repo — lanjut tanpa overwrite."
-fi
-
-# Unit panel
-if [[ -f "$SYSTEMD_DIR/cartenz-panel.service" ]]; then
-  cp -f "$SYSTEMD_DIR/cartenz-panel.service" /etc/systemd/system/cartenz-panel.service
-else
-  cat >/etc/systemd/system/cartenz-panel.service <<'EOF'
-[Unit]
-Description=Cartenz VPN Panel
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/cartenz-panel
-Environment=NODE_ENV=production
-Environment=PORT=8080
-Environment=SESSION_SECRET=
-ExecStart=/usr/bin/node /opt/cartenz-panel/server.cjs
-Restart=always
-RestartSec=3
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-fi
-
-# inject SESSION_SECRET jika kosong
-if grep -q 'SESSION_SECRET=$' /etc/systemd/system/cartenz-panel.service; then
-  sed -i "s|SESSION_SECRET=$|SESSION_SECRET=$(openssl rand -hex 32)|" /etc/systemd/system/cartenz-panel.service
-fi
-
-# install deps panel (hanya jika ada)
-if [[ -f /opt/cartenz-panel/package.json ]]; then
-  (cd /opt/cartenz-panel && npm ci --omit=dev || npm install --omit=dev)
-fi
-
-# branding kecil (opsional)
-[[ -f /opt/cartenz-panel/public/index.html ]] && sed -i 's/Cartenz Panel/Cartenz VPN Premium/g' /opt/cartenz-panel/public/index.html || true
-
-# ======== Pasang skrip ke /usr/bin ========
-log "Menyalin skrip ke /usr/bin…"
-if [[ -d "$SCRIPT_DIR" ]]; then
-  install -m 0755 -D "$SCRIPT_DIR/"* /usr/bin/
-  # yakinkan menu executable
-  [[ -f /usr/bin/menu ]] && chmod +x /usr/bin/menu || warn "menu tidak ditemukan di scripts/ — lewati"
-else
-  warn "Folder scripts/ tidak ditemukan."
-fi
-
-# ======== Firewall ========
+# ======== Firewall (mirror upstream ports) ========
 log "Konfigurasi firewall (UFW)…"
-apt-get install -y --no-install-recommends ufw || true
-ufw allow OpenSSH || true
-ufw allow 80,443/tcp || true
-ufw allow 109,143/tcp || true
-ufw allow 8080/tcp || true
-ufw allow 10000:10005/tcp || true
-ufw allow 2095/tcp || true           # ws-stunnel
-ufw allow 7100:7900/udp || true      # UDPGW range (opsional)
 ufw --force enable || true
+ufw allow 22/tcp
+ufw allow 80,443/tcp
+ufw allow 81/tcp
+ufw allow 109,143/tcp
+ufw allow 222,777/tcp
+ufw allow 7100:7900/udp
 
-# ======== Start semua service utama ========
-log "Menyalakan semua service…"
-enable_and_start stunnel4
-enable_and_start xray
-enable_and_start ws-stunnel
-enable_and_start cartenz-panel
-# aktifkan ws-dropbear bila ada unitnya
-if systemctl list-unit-files | grep -q '^ws-dropbear.service'; then enable_and_start ws-dropbear; fi
-# telebot opsional—jangan dipaksa start
-if systemctl list-unit-files | grep -q '^telebot.service'; then
-  warn "telebot dibiarkan nonaktif (opsional)."
-fi
-
-# ======== Auto MENU saat login ========
-log "Set login otomatis menampilkan menu…"
-cat >/etc/profile.d/99-cartenz-menu.sh <<'EOF'
-# Tampilkan menu Cartenz VPN Premium saat login shell interaktif root
-if [[ $EUID -eq 0 && -t 1 && -x /usr/bin/menu ]]; then
-  echo
-  echo "Launching Cartenz VPN Premium menu..."
-  /usr/bin/menu || true
-fi
-EOF
-chmod +x /etc/profile.d/99-cartenz-menu.sh
-
-# ======== Ringkasan ========
-echo
+# ======== Health check & Ringkasan ========
+echo -e "\n${W}==============================${C0}"
+echo -e "${W}  RINGKASAN INSTALASI (MATCH) ${C0}"
 echo -e "${W}==============================${C0}"
-echo -e "${W}  RINGKASAN INSTALASI CARTENZ ${C0}"
-echo -e "${W}==============================${C0}"
-for s in xray nginx stunnel4 dropbear ws-stunnel ws-dropbear cartenz-panel; do
+for s in nginx xray stunnel4 dropbear; do
   if systemctl is-active --quiet "$s"; then ok "$s : active"; else err "$s : INACTIVE"; fi
 done
-echo
-echo -e "${G}Panel URL : https://$PANEL_DOMAIN${C0}"
-echo -e "${G}VPN Host  : $VPN_DOMAIN${C0}"
-echo -e "${Y}Jika issuance TLS gagal, ulang manual:\n  systemctl stop nginx xray stunnel4 && certbot certonly --standalone -d $PANEL_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && certbot certonly --standalone -d $VPN_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && systemctl start nginx stunnel4 xray${C0}"
+
+echo -e "\n${W}Port (seharusnya):${C0}"
+echo " - OpenSSH   : 22"
+echo " - SSH-WS    : 80 / 443"
+echo " - Stunnel4  : 222, 777"
+echo " - Dropbear  : 109, 143"
+echo " - Nginx     : 81"
+echo " - Badvpn    : 7100–7900/UDP"
+echo " - XRAY      : WS 80/443 + gRPC 443"
+
+echo -e "\n${W}Cek cepat (port listen):${C0}"
+ss -tulpen | grep -E '(:22|:80|:81|:109|:143|:222|:443|:777|:7100|:79[0-9]{2})' || true
 echo
 
-# ======== Simpan catatan & Reboot ========
+# ======== Simpan Catatan ========
 {
   echo "Cartenz Install — $(date)"
-  echo "Panel: https://${PANEL_DOMAIN}"
-  echo "VPN  : ${VPN_DOMAIN}"
-} > "$LOG_FILE"
+  echo "Domain VPN : ${DOMAIN}"
+  echo "Services   : nginx, xray, stunnel4, dropbear, ipsec, sstp, sshws"
+} >> "$LOG_FILE"
 
-echo -e "${W}Reboot VPS untuk finalisasi. Setelah login, menu akan tampil otomatis.${C0}"
-sleep 3
-/sbin/reboot
+# ======== Reboot ========
+read -rp "Reboot sekarang? (Y/n): " RBT
+if [[ "${RBT:-Y}" =~ ^[Yy]$ ]]; then
+  echo "Rebooting in 5s…"; sleep 5; /sbin/reboot
+else
+  echo "Silakan logout/login kembali, lalu ketik: menu"
+fi
