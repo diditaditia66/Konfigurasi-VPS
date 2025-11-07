@@ -1,0 +1,15 @@
+# Node/Panel state
+opt/cartenz-panel/node_modules/
+opt/cartenz-panel/sessions.sqlite
+opt/cartenz-panel/users.json
+opt/cartenz-panel/users.json.bak*
+*.log
+
+# Cert & keys (IRISAN SANGAT PENTING)
+etc/xray/xray.crt
+etc/xray/xray.key
+
+# Backup / sementara
+scripts.backup*/
+*.tmp
+.DS_Store

@@ -1,0 +1,31 @@
+/* Dark, clean, and readable */
+body { letter-spacing: .2px; }
+
+/* terminal look */
+.terminal {
+  background: #0d1117;
+  color: #d1d5db;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: .92rem;
+  min-height: 260px;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: .5rem;
+}
+
+/* overlay loader */
+.loader {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.35);
+  display: grid; place-items: center;
+  z-index: 1055;
+}
+
+/* buttons */
+.btn { border-radius: .65rem; }
+
+/* small polish */
+.card { border-radius: .9rem; }
+.card-title { font-weight: 700; }
+

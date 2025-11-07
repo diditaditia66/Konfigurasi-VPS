@@ -1,0 +1,17 @@
+[Unit]
+Description=Cartenz VPN Panel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cartenz-panel
+Environment=NODE_ENV=production
+Environment=PORT=8080
+Environment=SESSION_SECRET=
+ExecStart=/usr/bin/node /opt/cartenz-panel/server.cjs
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

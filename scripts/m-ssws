@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+. /usr/local/lib/cartenz-ui.sh
+title "SHADOWSOCKS MENU"
+
+top; center_row "${B}${FG}>>> AKSI SHADOWSOCKS <<<${NC}"; sep
+items=(
+  "${BLU}[${NC}${B}01${NC}${BLU}]${NC} Create Shadowsocks"
+  "${BLU}[${NC}${B}02${NC}${BLU}]${NC} Trial Shadowsocks"
+  "${BLU}[${NC}${B}03${NC}${BLU}]${NC} Renew Shadowsocks"
+  "${BLU}[${NC}${B}04${NC}${BLU}]${NC} Delete Shadowsocks"
+  "${BLU}[${NC}${B}05${NC}${BLU}]${NC} View Create Log"
+  "${BLU}[${NC}${B}x ${NC}${BLU}]${NC} Kembali"
+); grid_menu_auto items
+bot; echo
+read -rp "Pilih: " o
+case "$o" in
+  1|01) clear; add-ssws ;;
+  2|02) clear; trialssws ;;
+  3|03) clear; renew-ssws ;;
+  4|04) clear; del-ssws ;;
+  5|05) clear; ${PAGER:-less} /etc/log-create-shadowsocks.log ;;
+  x|X)  menu ;;
+  *)    echo "Pilihan salah"; sleep 1; exec "$0" ;;
+esac

@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Cartenz VPN Premium — ANSI-safe width (escape-aware), auto-fit, 3-col grid
+set -o errexit -o pipefail -o nounset
+
+# -------- Colors --------
+NC=$'\e[0m'; B=$'\e[1m'
+FG=$'\e[97m'; CYA=$'\e[36m'; GRN=$'\e[32m'; RED=$'\e[31m'; BLU=$'\e[34m'
+
+# -------- Width / Layout --------
+termw(){ tput cols 2>/dev/null || echo 80; }
+calc_w(){ local tw=$(termw); local max=$((tw-4)); ((max<48)) && max=48; local def=72; ((def>max)) && echo "$max" || echo "$def"; }
+W=$(calc_w)
+
+repeat(){ local n=$1 ch=$2; for ((i=0;i<n;i++)); do printf '%s' "$ch"; done; }
+
+# Hapus escape ANSI utk hitung panjang terlihat
+vis(){ sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
+
+# Cetak 1 baris dalam box, padding mempertimbangkan escape ANSI
+row(){ 
+  local s="$1"; local plain; plain=$(printf "%s" "$s" | vis)
+  local len=${#plain}; (( len > W-1 )) && { s=$(printf "%s" "$s" | vis | cut -c1-$((W-1))); len=$((W-1)); }
+  printf "${CYA}│${NC} %s%*s${CYA}│${NC}\n" "$s" $((W-1-len)) ""
+}
+center_row(){
+  local s="$1"; local plain; plain=$(printf "%s" "$s" | vis)
+  local len=${#plain}; (( len > W-1 )) && { s=$(printf "%s" "$s" | vis | cut -c1-$((W-1))); len=$((W-1)); }
+  local left=$(( (W-1-len)/2 ))
+  local right=$(( W-1-len-left ))
+  printf "${CYA}│${NC} %*s%s%*s${CYA}│${NC}\n" "$left" "" "$s" "$right" ""
+}
+ibox_sep(){ printf "${CYA}│${NC} "; repeat $((W-1)) '─'; printf "${CYA}│${NC}\n"; }
+box_top(){    printf "${CYA}┌"; repeat "$W" '─'; printf "┐${NC}\n"; }
+box_bottom(){ printf "${CYA}└"; repeat "$W" '─'; printf "┘${NC}\n"; }
+
+kv(){ printf "  ${RED}●${NC} ${GRN}%-14s${NC} = %s" "$1" "$2"; }
+badge(){ systemctl is-active --quiet "$1" 2>/dev/null && printf "${GRN}ON${NC}" || printf "${RED}OFF${NC}"; }
+
+# -------- Info --------
+OS=$(hostnamectl 2>/dev/null | awk -F': ' '/Operating System/ {print $2}')
+UPTIME="$(uptime -p | cut -d ' ' -f 2-10)"
+IPVPS="$(curl -sS ifconfig.me || echo '-')"
+DOMAIN="$(cat /etc/xray/domain 2>/dev/null || echo '-')"
+DATE="$(date +%d-%m-%Y)"
+TIME="$(date +%T)"
+CORES=$(awk -F: '/model name/ {c++} END{print c}' /proc/cpuinfo)
+RAM_ALL=$(free -m | awk 'NR==2{print $2" MB"}')
+RAM_USE=$(free -m | awk 'NR==2{print $3" MB"}')
+CPU_LOAD="$(ps aux | awk 'BEGIN {sum=0} {sum+=$3}; END {printf("%d%%",sum)}')"
+TLS="unknown"
+if [[ -n "$DOMAIN" && -f "$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key" ]]; then
+  mt=$(stat "$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key" | sed -n '7,6p' | awk '{print $2" "$3" "$4" "$5}')
+  s1=$(date +%s -d "$mt" 2>/dev/null || echo 0)
+  left=$((90 - (($(date +%s)-s1)/86400) ))
+  TLS=$([ "$left" -le 0 ] && echo "expired" || echo "$left days")
+fi
+
+# Bandwidth (vnstat) — robust fallback
+IFACE=$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')
+IFACE=${IFACE:-eth0}
+D="-" U="-" T="-"
+if command -v vnstat >/dev/null 2>&1; then
+  read -r D U T < <(vnstat -i "$IFACE" 2>/dev/null | awk '/today/ {print $2$3, $5$6, $8$9}')
+  if [[ -z "$D" || -z "$U" || -z "$T" ]]; then
+    read -r D U T < <(vnstat -i "$IFACE" -d 2>/dev/null | awk 'NR==4 {print $2$3, $5$6, $8$9}')
+  fi
+  [[ -z "$D" ]] && D="-" ; [[ -z "$U" ]] && U="-" ; [[ -z "$T" ]] && T="-"
+fi
+
+clear
+
+# -------- Header --------
+box_top
+center_row "${B}${FG}Welcome to Cartenz VPN Premium${NC}"
+box_bottom
+
+# -------- System info --------
+box_top
+center_row "${B}${FG}>>> SYSTEM INFO <<<${NC}"
+ibox_sep
+row "$(kv "SYSTEM OS"   "${OS:- -}")"
+row "$(kv "SYSTEM CORE" "${CORES:- -}")"
+row "$(kv "SERVER RAM"  "${RAM_ALL:- -} / ${RAM_USE:- -}")"
+row "$(kv "LOADCPU"     "${CPU_LOAD:- -}")"
+row "$(kv "DATE"        "${DATE:- -}")"
+row "$(kv "TIME"        "${TIME:- -}")"
+row "$(kv "UPTIME"      "${UPTIME:- -}")"
+row "$(kv "IP VPS"      "${IPVPS:- -}")"
+row "$(kv "DOMAIN"      "${DOMAIN:- -}")"
+row "$(kv "TLS CERT"    "${TLS:- -}")"
+box_bottom
+
+# -------- Services --------
+box_top
+center_row "${B}${FG}>>> SERVICES STATUS <<<${NC}"
+ibox_sep
+row "  SSH $(badge ssh)     NGINX $(badge nginx)     HAPROXY $(badge haproxy)"
+row "  XRAY $(badge xray)    DROPBEAR $(badge dropbear)  CRON $(badge cron)"
+box_bottom
+
+# -------- Bandwidth --------
+box_top
+center_row "${B}${FG}>>> BANDWIDTH TODAY (${IFACE}) <<<${NC}"
+ibox_sep
+row "  ${GRN}Download${NC} = ${D}"
+row "  ${GRN}Upload  ${NC} = ${U}"
+row "  ${GRN}Total   ${NC} = ${T}"
+box_bottom
+
+# -------- Menu (3 columns, auto pad) --------
+labels=(
+  "SSH MENU"
+  "VMESS MENU"
+  "VLESS MENU"
+  "TROJAN MENU"
+  "SHADOWSOCKS"
+  "L2TP MENU"
+  "PPTP MENU"
+  "SSTP MENU"
+  "MENU SETTING"
+  "STATUS SERVICE"
+  "CLEAR RAM CACHE"
+  "REBOOT VPS"
+  "EXIT SCRIPT"
+)
+box_top
+center_row "${B}${FG}>>> MENU <<<${NC}"
+ibox_sep
+cols=3
+pad=$(( (W-2)/cols )); (( pad<18 )) && pad=18
+count=${#labels[@]}
+idx=1
+while (( idx <= count )); do
+  line=""
+  for (( c=1; c<=cols; c++ )); do
+    (( pos=idx+c-1 )); (( pos>count )) && break
+    num=$(printf "%02d" "$pos"); [[ "${labels[pos-1]}" == "EXIT SCRIPT" ]] && num="x "
+    cell="${BLU}[${NC}${B}${num}${NC}${BLU}]${NC} ${labels[pos-1]}"
+    # padding ANSI-safe: hitung visible length
+    vlen=$(printf "%s" "$cell" | vis | wc -c)
+    printf -v chunk "%s%*s" "$cell" $((pad - vlen)) ""
+    line+="$chunk"
+  done
+  row " $line"
+  (( idx+=cols ))
+done
+box_bottom
+
+echo
+read -rp "Options [ 1 - 12 | x ] » " opt
+echo
+
+case "$opt" in
+  1|01) clear; m-sshovpn ;;
+  2|02) clear; m-vmess   ;;
+  3|03) clear; m-vless   ;;
+  4|04) clear; m-trojan  ;;
+  5|05) clear; m-ssws    ;;
+  6|06) clear; m-l2tp    ;;
+  7|07) clear; m-pptp    ;;
+  8|08) clear; m-sstp    ;;
+  9|09) clear; m-system  ;;
+  10)   clear; running   ;;
+  11)   clear; echo 3 > /proc/sys/vm/drop_caches && echo "RAM cache cleared." ;;
+  12)   clear; /sbin/reboot || reboot ;;
+  x|X|13) exit 0 ;;
+  *) echo "Pilihan tidak valid."; sleep 1; exec "$0" ;;
+esac

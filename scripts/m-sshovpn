@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+. /usr/local/lib/cartenz-ui.sh
+title "SSH MENU"
+
+top; center_row "${B}${FG}>>> AKSI SSH <<<${NC}"; sep
+items=(
+  "${BLU}[${NC}${B}01${NC}${BLU}]${NC} Create SSH & WS"
+  "${BLU}[${NC}${B}02${NC}${BLU}]${NC} Trial SSH & WS"
+  "${BLU}[${NC}${B}03${NC}${BLU}]${NC} Renew SSH & WS"
+  "${BLU}[${NC}${B}04${NC}${BLU}]${NC} Delete SSH & WS"
+  "${BLU}[${NC}${B}05${NC}${BLU}]${NC} Check Login SSH/WS"
+  "${BLU}[${NC}${B}06${NC}${BLU}]${NC} List Member SSH/WS"
+  "${BLU}[${NC}${B}07${NC}${BLU}]${NC} Delete Expired SSH/WS"
+  "${BLU}[${NC}${B}08${NC}${BLU}]${NC} Setup Autokill SSH"
+  "${BLU}[${NC}${B}09${NC}${BLU}]${NC} Check Multi-login"
+  "${BLU}[${NC}${B}10${NC}${BLU}]${NC} View Create Log"
+  "${BLU}[${NC}${B}11${NC}${BLU}]${NC} Change Banner"
+  "${BLU}[${NC}${B}12${NC}${BLU}]${NC} Lock User"
+  "${BLU}[${NC}${B}13${NC}${BLU}]${NC} Unlock User"
+  "${BLU}[${NC}${B}x ${NC}${BLU}]${NC} Kembali"
+); grid_menu_auto items
+bot; echo
+read -rp "Pilih: " o
+case "$o" in
+  1|01)  clear; usernew ;;
+  2|02)  clear; trial ;;
+  3|03)  clear; renew ;;
+  4|04)  clear; hapus ;;
+  5|05)  clear; cek ;;
+  6|06)  clear; member ;;
+  7|07)  clear; delete ;;
+  8|08)  clear; autokill ;;
+  9|09)  clear; ceklim ;;
+  10)    clear; ${PAGER:-less} /etc/log-create-ssh.log ;;
+  11)    clear; ${EDITOR:-nano} /etc/issue.net ;;
+  12)    clear; user-lock ;;
+  13)    clear; user-unlock ;;
+  x|X)   menu ;;
+  *)     echo "Pilihan salah"; sleep 1; exec "$0" ;;
+esac

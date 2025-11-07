@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Cartenz VPN Premium</title>
+<style>
+  :root{
+    --bg:#0b1117;--panel:#0f1724;--panel2:#0d1520;--ink:#e6edf3;--muted:#96a3b4;
+    --line:#1f2b3a;--accent:#66b2ff;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  a{color:inherit;text-decoration:none}
+  .container{max-width:1050px;margin:0 auto;padding:20px}
+  /* cards & controls */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
+  .card.flat{background:transparent;border-color:transparent}
+  .title{font-weight:700;font-size:18px;margin-bottom:8px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .grid{display:grid;gap:14px}
+  .grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  @media (max-width: 900px){.grid.cols-3{grid-template-columns:1fr}}
+  .input{background:var(--panel2);border:1px solid var(--line);border-radius:12px;color:var(--ink);padding:10px 12px;min-width:160px;outline:none}
+  .input:focus{border-color:var(--accent)}
+  .btn{appearance:none;border:1px solid var(--line);background:#132033;color:var(--ink);padding:10px 14px;border-radius:12px;cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:#183053;border-color:#294268}
+  .btn.ok{background:#0f2a1c;border-color:#1d6d45}
+  .btn.warn{background:#2f250e;border-color:#6c5321}
+  .btn.err{background:#3a1f24;border-color:#6e3039}
+  .btn.ghost{background:transparent}
+  .btn.big{padding:16px 18px;font-size:15px;border-radius:16px}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;background:#121b29}
+  .muted{color:var(--muted)}
+  .spacer{height:14px}
+  .hr{height:1px;background:var(--line);margin:14px 0}
+  .right{margin-left:auto}
+  /* layout screens */
+  .screen{display:none}
+  .screen.active{display:block}
+  /* topbar */
+  .topbar{display:flex;gap:10px;align-items:center;margin-bottom:16px}
+  .topbar h1{font-size:22px;margin:0}
+  /* terminal */
+  .terminal{background:#0a1016;border:1px solid var(--line);border-radius:14px;padding:12px;min-height:220px;white-space:pre-wrap;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .toolbar{display:flex;gap:8px;justify-content:flex-end;margin-bottom:8px}
+  /* menu tiles */
+  .tile{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);background:#0e1623;border-radius:16px;padding:16px;cursor:pointer}
+  .tile:hover{border-color:var(--accent)}
+  .tile .icon{width:36px;height:36px;border-radius:10px;background:#152236;display:flex;align-items:center;justify-content:center}
+  .tile h3{margin:0 0 4px 0}
+  /* tab selector */
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .tab{padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:#0e1623;color:#c6d3e3;cursor:pointer}
+  .tab.active{background:#17263b;border-color:#294268;color:#fff}
+  table{width:100%;border-collapse:collapse}
+  th,td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left;font-size:13px}
+  th{color:#b9c6d8}
+  /* fullscreen login */
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .login-card{max-width:420px;width:100%}
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+
+<!-- ========== LOGIN ========== -->
+<section id="scr-login" class="screen active">
+  <div class="login-wrap">
+    <div class="card login-card">
+      <div class="title">Masuk ke Cartenz VPN Premium</div>
+      <div class="sub">Silakan login terlebih dahulu untuk melanjutkan.</div>
+      <div class="row">
+        <input id="lg-user" class="input" placeholder="username" autocomplete="username">
+        <input id="lg-pass" class="input" placeholder="password" type="password" autocomplete="current-password">
+      </div>
+      <div class="spacer"></div>
+      <div class="row">
+        <button id="btnLogin" class="btn primary">Login</button>
+        <span id="loginMsg" class="muted"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== HOME ========== -->
+<section id="scr-home" class="screen">
+  <div class="container">
+    <div class="topbar">
+      <h1>Cartenz VPN Premium</h1>
+      <span id="whoami" class="pill">—</span>
+      <span class="right"></span>
+      <button id="btnGoManage" class="btn">Manage Account</button>
+      <button id="btnGoAdd" class="btn ok">Add Account</button>
+      <button id="btnGoTrial" class="btn warn">Trial Account</button>
+      <button id="btnLogout" class="btn err">Logout</button>
+    </div>
+
+    <div class="grid cols-3">
+      <div id="go-add" class="tile">
+        <div class="icon">➕</div>
+        <div><h3>Add Account</h3><div class="muted">Buat akun baru untuk layanan SSH/VMess/VLess/Trojan/Shadowsocks.</div></div>
+      </div>
+      <div id="go-trial" class="tile">
+        <div class="icon">⚡</div>
+        <div><h3>Trial Account</h3><div class="muted">Buat akun trial 1 hari untuk pengujian cepat.</div></div>
+      </div>
+      <div id="go-manage" class="tile">
+        <div class="icon">🛠️</div>
+        <div><h3>Manage Account (Admin)</h3><div class="muted">Lihat & hapus akun berdasarkan jenis layanan.</div></div>
+      </div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="card">
+      <div class="row">
+        <div class="title">Output</div>
+        <span class="right"></span>
+        <div class="toolbar">
+          <button id="btnCopy" class="btn ghost">📋 Salin</button>
+          <button id="btnClear" class="btn ghost">🧹 Bersihkan</button>
+        </div>
+      </div>
+      <pre id="out" class="terminal"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ========== ADD ========== -->
+<section id="scr-add" class="screen">
+  <div class="container">
+    <div class="topbar">
+      <button class="btn" id="backHomeA">← Kembali</button>
+      <h1>Tambah Akun</h1>
+      <span class="right"></span>
+      <button id="btnToTrialFromAdd" class="btn warn">Trial Account</button>
+      <button id="btnToManageFromAdd" class="btn">Manage</button>
+    </div>
+
+    <div class="card flat">
+      <div class="sub">Pilih layanan:</div>
+      <div class="tabs" id="addTabs">
+        <button class="tab active" data-kind="ssh">SSH</button>
+        <button class="tab" data-kind="vmess">VMess</button>
+        <button class="tab" data-kind="vless">VLess</button>
+        <button class="tab" data-kind="trojan">Trojan</button>
+        <button class="tab" data-kind="ss">Shadowsocks</button>
+      </div>
+
+      <!-- SSH form -->
+      <div id="add-ssh" class="card">
+        <div class="title">Add SSH</div>
+        <div class="row">
+          <input id="ssh_user" class="input" placeholder="username">
+          <input id="ssh_pass" class="input" placeholder="password (kosong = auto)">
+          <input id="ssh_days" class="input" type="number" min="1" value="30">
+          <button id="btnAddSSH" class="btn ok" disabled>Tambah</button>
+        </div>
+        <div class="sub">Tombol akan aktif jika username terisi.</div>
+      </div>
+
+      <!-- Generic form (vmess/vless/trojan/ss) -->
+      <div id="add-generic" class="card hidden">
+        <div class="title" id="genTitle">Add VMess</div>
+        <div class="row">
+          <input id="gen_remarks" class="input" placeholder="remarks / username">
+          <input id="gen_days" class="input" type="number" min="1" value="30">
+          <button id="btnAddGeneric" class="btn ok" disabled>Tambah</button>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="card">
+        <div class="row">
+          <div class="title">Output</div>
+          <span class="right"></span>
+          <div class="toolbar">
+            <button id="btnCopyA" class="btn ghost">📋 Salin</button>
+            <button id="btnClearA" class="btn ghost">🧹 Bersihkan</button>
+          </div>
+        </div>
+        <pre id="outA" class="terminal"></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== TRIAL ========== -->
+<section id="scr-trial" class="screen">
+  <div class="container">
+    <div class="topbar">
+      <button class="btn" id="backHomeT">← Kembali</button>
+      <h1>Trial Akun</h1>
+      <span class="right"></span>
+      <button id="btnToAddFromTrial" class="btn ok">Add Account</button>
+      <button id="btnToManageFromTrial" class="btn">Manage</button>
+    </div>
+
+    <div class="card flat">
+      <div class="sub">Pilih layanan trial:</div>
+      <div class="tabs" id="trialTabs">
+        <button class="tab active" data-kind="ssh">SSH</button>
+        <button class="tab" data-kind="vmess">VMess</button>
+        <button class="tab" data-kind="vless">VLess</button>
+        <button class="tab" data-kind="trojan">Trojan</button>
+        <button class="tab" data-kind="ss">Shadowsocks</button>
+      </div>
+      <button id="btnDoTrial" class="btn warn big">Buat Trial</button>
+
+      <div class="spacer"></div>
+      <div class="card">
+        <div class="row">
+          <div class="title">Output</div>
+          <span class="right"></span>
+          <div class="toolbar">
+            <button id="btnCopyT" class="btn ghost">📋 Salin</button>
+            <button id="btnClearT" class="btn ghost">🧹 Bersihkan</button>
+          </div>
+        </div>
+        <pre id="outT" class="terminal"></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== MANAGE ========== -->
+<section id="scr-manage" class="screen">
+  <div class="container">
+    <div class="topbar">
+      <button class="btn" id="backHomeM">← Kembali</button>
+      <h1>Manage Akun</h1>
+      <span class="right"></span>
+      <button id="btnToAddFromManage" class="btn ok">Add</button>
+      <button id="btnToTrialFromManage" class="btn warn">Trial</button>
+    </div>
+
+    <div class="card flat">
+      <div class="sub">Pilih layanan untuk melihat daftarnya:</div>
+      <div class="tabs" id="manTabs">
+        <button class="tab active" data-kind="ssh">SSH</button>
+        <button class="tab" data-kind="vmess">VMess</button>
+        <button class="tab" data-kind="vless">VLess</button>
+        <button class="tab" data-kind="trojan">Trojan</button>
+        <button class="tab" data-kind="ss">Shadowsocks</button>
+        <span class="right pill" id="refTime">—</span>
+      </div>
+
+      <div id="tblWrap" class="card">
+        <table id="tbl"><thead><tr><th>Nama</th><th>Expired</th><th>Aksi</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  // ==== helpers ====
+  const $ = s => document.querySelector(s);
+  const $$ = s => Array.from(document.querySelectorAll(s));
+  const screens = {
+    login: $("#scr-login"), home: $("#scr-home"),
+    add: $("#scr-add"), trial: $("#scr-trial"), manage: $("#scr-manage")
+  };
+  function show(name){
+    Object.values(screens).forEach(sc=>sc.classList.remove("active"));
+    screens[name].classList.add("active");
+    window.scrollTo({top:0,behavior:"instant"});
+  }
+  const out = $("#out"), outA=$("#outA"), outT=$("#outT");
+  function log(outEl, s){ outEl.textContent += (outEl.textContent && !outEl.textContent.endsWith("\n") ? "\n":"") + s; outEl.scrollTop=outEl.scrollHeight; }
+  function clearOut(outEl){ outEl.textContent=""; }
+  function copyOut(outEl){ navigator.clipboard.writeText(outEl.textContent||""); }
+  async function api(url,opt={}){
+    const res = await fetch(url,{credentials:"same-origin",headers:{"Content-Type":"application/json"},...opt});
+    const data = await res.json().catch(()=> ({}));
+    if(!res.ok) throw new Error(data.error||res.statusText||"Request failed");
+    return data;
+  }
+  function setWho(u){ $("#whoami").textContent = u?`Login: ${u.username}`:"—"; }
+
+  // ==== auth flow ====
+  async function boot(){
+    try{
+      const m = await api("/api/me",{method:"GET"});
+      if(m.user){ setWho(m.user); show("home"); }
+      else show("login");
+    }catch{ show("login"); }
+  }
+  $("#btnLogin").onclick = async ()=>{
+    $("#loginMsg").textContent="";
+    try{
+      const username = $("#lg-user").value.trim();
+      const password = $("#lg-pass").value;
+      const r = await api("/api/login",{method:"POST",body:JSON.stringify({username,password})});
+      setWho(r.user); show("home");
+    }catch(e){ $("#loginMsg").textContent = "❌ " + e.message; }
+  };
+  $("#btnLogout").onclick = async ()=>{
+    try{ await api("/api/logout",{method:"POST"}); show("login"); }
+    catch(e){ alert(e.message); }
+  };
+
+  // ==== home nav ====
+  $("#go-add").onclick = ()=> show("add");
+  $("#go-trial").onclick = ()=> show("trial");
+  $("#go-manage").onclick = ()=> { show("manage"); refreshManage(); };
+  $("#btnGoAdd").onclick = ()=> show("add");
+  $("#btnGoTrial").onclick = ()=> show("trial");
+  $("#btnGoManage").onclick = ()=> { show("manage"); refreshManage(); };
+
+  // back buttons + cross nav
+  $("#backHomeA").onclick = ()=> show("home");
+  $("#backHomeT").onclick = ()=> show("home");
+  $("#backHomeM").onclick = ()=> show("home");
+  $("#btnToTrialFromAdd").onclick = ()=> show("trial");
+  $("#btnToManageFromAdd").onclick = ()=> { show("manage"); refreshManage(); };
+  $("#btnToAddFromTrial").onclick = ()=> show("add");
+  $("#btnToManageFromTrial").onclick = ()=> { show("manage"); refreshManage(); };
+  $("#btnToAddFromManage").onclick = ()=> show("add");
+  $("#btnToTrialFromManage").onclick = ()=> show("trial");
+
+  // terminal toolbar
+  $("#btnCopy").onclick = ()=> copyOut(out);
+  $("#btnClear").onclick = ()=> clearOut(out);
+  $("#btnCopyA").onclick = ()=> copyOut(outA);
+  $("#btnClearA").onclick = ()=> clearOut(outA);
+  $("#btnCopyT").onclick = ()=> copyOut(outT);
+  $("#btnClearT").onclick = ()=> clearOut(outT);
+
+  // ==== ADD screen ====
+  let addKind = "ssh";
+  function setAddKind(k){
+    addKind = k;
+    $$("#addTabs .tab").forEach(t=>t.classList.toggle("active", t.dataset.kind===k));
+    // show form
+    if(k==="ssh"){
+      $("#add-ssh").classList.remove("hidden");
+      $("#add-generic").classList.add("hidden");
+    }else{
+      $("#add-ssh").classList.add("hidden");
+      $("#add-generic").classList.remove("hidden");
+      $("#genTitle").textContent = "Add " + k.toUpperCase();
+    }
+    validateAdd();
+  }
+  $$("#addTabs .tab").forEach(t=> t.onclick=()=> setAddKind(t.dataset.kind));
+  function validateAdd(){
+    const sshOk = $("#ssh_user").value.trim().length>0;
+    $("#btnAddSSH").disabled = !sshOk;
+    const genOk = $("#gen_remarks").value.trim().length>0;
+    $("#btnAddGeneric").disabled = !genOk;
+  }
+  $("#ssh_user").oninput = validateAdd;
+  $("#gen_remarks").oninput = validateAdd;
+
+  $("#btnAddSSH").onclick = async ()=>{
+    const username = $("#ssh_user").value.trim();
+    const password = $("#ssh_pass").value;
+    const days = parseInt($("#ssh_days").value||"30",10);
+    log(outA, `$ add ssh ${username} ${days}d ...`);
+    try{
+      const {output,generatedPassword} = await api("/api/add/ssh",{method:"POST",body:JSON.stringify({username,password,days})});
+      log(outA, output||"(no output)");
+      if(generatedPassword) log(outA, `Password (auto): ${generatedPassword}`);
+      refreshManageIfVisible();
+    }catch(e){ log(outA, "ERROR: "+e.message); }
+  };
+
+  $("#btnAddGeneric").onclick = async ()=>{
+    const remarks = $("#gen_remarks").value.trim();
+    const days = parseInt($("#gen_days").value||"30",10);
+    log(outA, `$ add ${addKind} ${remarks} ${days}d ...`);
+    try{
+      const {output} = await api(`/api/add/${addKind}`,{method:"POST",body:JSON.stringify({remarks,days})});
+      log(outA, output||"(no output)");
+      refreshManageIfVisible();
+    }catch(e){ log(outA, "ERROR: "+e.message); }
+  };
+
+  // ==== TRIAL screen ====
+  let trialKind = "ssh";
+  function setTrialKind(k){
+    trialKind = k;
+    $$("#trialTabs .tab").forEach(t=>t.classList.toggle("active", t.dataset.kind===k));
+  }
+  $$("#trialTabs .tab").forEach(t=> t.onclick=()=> setTrialKind(t.dataset.kind));
+  $("#btnDoTrial").onclick = async ()=>{
+    log(outT, `$ trial ${trialKind} ...`);
+    try{
+      const {output} = await api(`/api/trial/${trialKind}`,{method:"POST"});
+      log(outT, output||"(no output)");
+      refreshManageIfVisible();
+    }catch(e){ log(outT, "ERROR: "+e.message); }
+  };
+
+  // ==== MANAGE screen ====
+  let manKind = "ssh";
+  function setManKind(k){
+    manKind = k;
+    $$("#manTabs .tab").forEach(t=>t.classList.toggle("active", t.dataset.kind===k));
+    refreshManage();
+  }
+  $$("#manTabs .tab").forEach(t=> t.onclick=()=> setManKind(t.dataset.kind));
+
+  async function refreshManage(){
+    try{
+      const data = await api("/api/accounts",{method:"GET"});
+      const map = {ssh:"ssh",vmess:"vmess",vless:"vless",trojan:"trojan",ss:"ss"};
+      const rows = data[map[manKind]] || [];
+      const tb = $("#tbl tbody"); tb.innerHTML="";
+      if(!rows.length){
+        const tr=document.createElement("tr"); tr.innerHTML=`<td class="muted" colspan="3">Tidak ada data</td>`;
+        tb.appendChild(tr);
+      }else{
+        rows.forEach(r=>{
+          const name = r.username || r.user || "";
+          const tr=document.createElement("tr");
+          tr.innerHTML = `<td>${esc(name)}</td><td>${esc(r.exp||"-")}</td>
+            <td><button class="btn err" data-del="${escAttr(name)}">Hapus</button></td>`;
+          tb.appendChild(tr);
+        });
+      }
+      $("#refTime").textContent = "Refreshed " + new Date().toLocaleTimeString();
+      tb.querySelectorAll("[data-del]").forEach(b=>{
+        b.onclick = async ()=>{
+          const name = b.dataset.del;
+          if(!confirm(`Hapus ${manKind} ${name}?`)) return;
+          try{
+            const res = await api(`/api/accounts/${encodeURIComponent(manKind)}/${encodeURIComponent(name)}`,{method:"DELETE"});
+            alert("OK: " + (res.output||"deleted"));
+            refreshManage();
+          }catch(e){ alert(e.message); }
+        };
+      });
+    }catch(e){
+      alert("Gagal load accounts: " + e.message);
+    }
+  }
+  function refreshManageIfVisible(){ if(screens.manage.classList.contains("active")) refreshManage(); }
+
+  // utils
+  const esc = s => (s||"").replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const escAttr = s => (s||"").replace(/"/g,'&quot;');
+
+  // home output toolbar
+  $("#btnCopy").onclick=()=>copyOut(out); $("#btnClear").onclick=()=>clearOut(out);
+
+  // sync home quick buttons
+  $("#btnGoAdd").onclick=()=>show("add");
+  $("#btnGoTrial").onclick=()=>show("trial");
+  $("#btnGoManage").onclick=()=>{ show("manage"); refreshManage(); };
+
+  // also mirror Copy/Clear on home already set
+
+  // bootstrap
+  boot();
+</script>
+<script>
+  document.getElementById("copyBtn").addEventListener("click", () => {
+    const outputText = document.getElementById("output").innerText.trim();
+    if (!outputText) {
+      alert("Tidak ada hasil untuk disalin!");
+      return;
+    }
+    navigator.clipboard.writeText(outputText)
+      .then(() => {
+        alert("✅ Output berhasil disalin ke clipboard!");
+      })
+      .catch((err) => {
+        console.error("Clipboard error:", err);
+        alert("❌ Gagal menyalin teks.");
+      });
+  });
+</script>
+</body>
+</html>
+

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+. /usr/local/lib/cartenz-ui.sh
+title "VMESS MENU"
+
+top; center_row "${B}${FG}>>> AKSI VMESS <<<${NC}"; sep
+items=(
+  "${BLU}[${NC}${B}01${NC}${BLU}]${NC} Create Vmess"
+  "${BLU}[${NC}${B}02${NC}${BLU}]${NC} Trial Vmess"
+  "${BLU}[${NC}${B}03${NC}${BLU}]${NC} Renew Vmess"
+  "${BLU}[${NC}${B}04${NC}${BLU}]${NC} Delete Vmess"
+  "${BLU}[${NC}${B}05${NC}${BLU}]${NC} Check Login Vmess"
+  "${BLU}[${NC}${B}06${NC}${BLU}]${NC} View Create Log"
+  "${BLU}[${NC}${B}x ${NC}${BLU}]${NC} Kembali"
+); grid_menu_auto items
+bot; echo
+read -rp "Pilih: " o
+case "$o" in
+  1|01) clear; add-ws ;;
+  2|02) clear; trialvmess ;;
+  3|03) clear; renew-ws ;;
+  4|04) clear; del-ws ;;
+  5|05) clear; cek-ws ;;
+  6|06) clear; ${PAGER:-less} /etc/log-create-vmess.log ;;
+  x|X)  menu ;;
+  *)    echo "Pilihan salah"; sleep 1; exec "$0" ;;
+esac

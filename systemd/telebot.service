@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram Bot for VPN Menu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/telebot.env
+ExecStart=/usr/local/bin/telebot.sh
+Restart=always
+RestartSec=2
+User=root
+WorkingDirectory=/root
+# Jaga-jaga supaya LANG konsisten:
+Environment=LANG=C.UTF-8
+
+[Install]
+WantedBy=multi-user.target
+
