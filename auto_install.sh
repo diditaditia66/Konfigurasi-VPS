@@ -1,48 +1,41 @@
 #!/usr/bin/env bash
-# auto_install.sh — Instal otomatis Cartenz VPN Premium dari repo GitHub
-# Diuji di Ubuntu/Debian (20.04/22.04/24.04, 11/12)
+# auto_install.sh — bootstrap satu baris untuk Cartenz VPN Premium
+# Pakai: bash <(curl -fsSL https://raw.githubusercontent.com/diditaditia66/Konfigurasi-VPS-Baru/main/auto_install.sh)
 
 set -euo pipefail
 IFS=$'\n\t'
+export DEBIAN_FRONTEND=noninteractive
 
-C0='\033[0m'; G='\033[32m'; Y='\033[33m'; R='\033[31m'; B='\033[36m'
-log(){ echo -e "${B}[*]${C0} $*"; }
+REPO_URL_DEFAULT="https://github.com/diditaditia66/Konfigurasi-VPS-Baru.git"
+REPO_URL="${REPO_URL:-$REPO_URL_DEFAULT}"
+REPO_DIR="${REPO_DIR:-Konfigurasi-VPS-Baru}"
+
+C0='\033[0m'; G='\033[32m'; R='\033[31m'; Y='\033[33m'; W='\033[97m'
 ok(){ echo -e "${G}[OK]${C0} $*"; }
-warn(){ echo -e "${Y}[WARN]${C0} $*"; }
 err(){ echo -e "${R}[ERR]${C0} $*" >&2; }
+ask(){ local p="$1" v; read -rp "$p" v; echo "$v"; }
 
-REPO_URL="https://github.com/diditaditia66/Konfigurasi-VPS-Baru.git"
-REPO_DIR="Konfigurasi-VPS-Baru"
+if [[ $EUID -ne 0 ]]; then err "Jalankan sebagai root"; exit 1; fi
 
-# Pastikan root
-if [[ $EUID -ne 0 ]]; then
-  err "Script ini harus dijalankan sebagai root!"
-  exit 1
+echo
+echo -e "${W}=== Cartenz VPN Premium — Auto Install ===${C0}"
+PANEL_DOMAIN=$(ask "Masukkan domain Panel (contoh: panel.cartenz-vpn.my.id): ")
+VPN_DOMAIN=$(ask   "Masukkan domain VPN   (contoh: vpn.cartenz-vpn.my.id)  : ")
+read -rp "Email Certbot (kosongkan untuk admin@${VPN_DOMAIN}): " CERTBOT_EMAIL
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-admin@${VPN_DOMAIN}}"
+
+apt-get update -y
+apt-get install -y --no-install-recommends git ca-certificates curl wget
+
+if [[ -d "$REPO_DIR/.git" ]]; then
+  echo "Repo sudah ada: $REPO_DIR → git pull"
+  git -C "$REPO_DIR" pull --ff-only
+else
+  git clone "$REPO_URL" "$REPO_DIR"
 fi
 
-# Cek ketersediaan git
-if ! command -v git >/dev/null 2>&1; then
-  log "Git belum terpasang. Menginstal git..."
-  apt-get update -y && apt-get install -y git
-  ok "Git terpasang."
-fi
+chmod +x "$REPO_DIR/install_restore.sh"
 
-# Hapus folder lama bila ada
-if [[ -d "$REPO_DIR" ]]; then
-  warn "Folder $REPO_DIR sudah ada, menghapus dulu..."
-  rm -rf "$REPO_DIR"
-fi
-
-# Clone repo dari GitHub
-log "Meng-clone repo konfigurasi dari GitHub..."
-git clone "$REPO_URL" "$REPO_DIR" || { err "Gagal clone repo!"; exit 1; }
-ok "Repo berhasil di-clone."
-
-# Jalankan installer
-cd "$REPO_DIR"
-chmod +x install_restore.sh
-log "Menjalankan script install_restore.sh..."
-bash install_restore.sh
-
-ok "Instalasi selesai!"
-echo -e "\n${G}Ketik 'menu' untuk membuka panel konfigurasi VPN.${C0}\n"
+# jalankan installer dengan ENV untuk skip prompt
+PANEL_DOMAIN="$PANEL_DOMAIN" VPN_DOMAIN="$VPN_DOMAIN" CERTBOT_EMAIL="$CERTBOT_EMAIL" \
+  bash "$REPO_DIR/install_restore.sh"
