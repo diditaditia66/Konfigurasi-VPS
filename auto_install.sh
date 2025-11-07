@@ -15,7 +15,7 @@ ok(){ echo -e "${G}[OK]${C0} $*"; }
 err(){ echo -e "${R}[ERR]${C0} $*" >&2; }
 ask(){ local p="$1" v; read -rp "$p" v; echo "$v"; }
 
-if [[ $EUID -ne 0 ]]; then err "Jalankan sebagai root"; exit 1; fi
+[[ $EUID -eq 0 ]] || { err "Jalankan sebagai root"; exit 1; }
 
 echo
 echo -e "${W}=== Cartenz VPN Premium — Auto Install ===${C0}"
