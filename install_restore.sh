@@ -1,333 +1,185 @@
 #!/usr/bin/env bash
+# install_restore.sh — Cartenz VPN Premium (Konfigurasi-VPS-Baru)
+# Restore semua layanan & konfigurasi otomatis
+# Tested: Ubuntu/Debian (20.04, 22.04, 24.04, 11, 12)
+
 set -euo pipefail
-
-# ==============================
-# Cartenz VPS – Install & Restore
-# ==============================
-# Struktur repo yang diharapkan:
-# scripts/   -> /usr/bin (chmod +x)
-# nginx/     -> /etc/nginx
-# xray/      -> /etc/xray
-# systemd/   -> /etc/systemd/system
-# panel/     -> /opt/cartenz-panel  (Node.js + server.cjs)
-# firewall/  -> (opsional) iptables rules
-#
-# Opsional: Let's Encrypt (certbot) jika --domain & --email diberikan (tanpa --no-ssl).
-
-# -------- Args --------
-DOMAIN=""
-EMAIL=""
-PANEL_PORT="8080"
-USE_SSL="yes"
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --domain) DOMAIN="${2:-}"; shift 2 ;;
-    --email) EMAIL="${2:-}"; shift 2 ;;
-    --panel-port) PANEL_PORT="${2:-8080}"; shift 2 ;;
-    --no-ssl) USE_SSL="no"; shift ;;
-    *) echo "Argumen tidak dikenal: $1"; exit 1 ;;
-  esac
-done
-
-if [[ $EUID -ne 0 ]]; then
-  echo "Jalankan sebagai root: sudo bash install_restore.sh ..."
-  exit 1
-fi
-
-log(){ echo -e "\033[1;32m[+]\033[0m $*"; }
-warn(){ echo -e "\033[1;33m[!]\033[0m $*"; }
-err(){ echo -e "\033[1;31m[-]\033[0m $*" >&2; }
-
-# -------- OS Check --------
-if ! command -v apt >/dev/null 2>&1; then
-  err "Skrip ini ditujukan untuk Ubuntu/Debian (APT)."
-  exit 1
-fi
-
-# -------- Update & Packages --------
-log "Update paket ..."
+IFS=$'\n\t'
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y --no-install-recommends \
-  ca-certificates curl wget git jq unzip ufw \
-  net-tools lsof tar gnupg2 tzdata
 
-# Nginx + alat SSL
-apt-get install -y nginx
-if [[ "$USE_SSL" == "yes" ]]; then
-  apt-get install -y certbot python3-certbot-nginx
+# ========== Warna ==========
+C0='\033[0m'; R='\033[31m'; G='\033[32m'; Y='\033[33m'; B='\033[34m'; C='\033[36m'; W='\033[97m'
+log(){ echo -e "${C}[*]${C0} $*"; }
+ok(){ echo -e "${G}[OK]${C0} $*"; }
+warn(){ echo -e "${Y}[WARN]${C0} $*"; }
+err(){ echo -e "${R}[ERR]${C0} $*" >&2; }
+
+# ========== Cek hak akses ==========
+if [[ $EUID -ne 0 ]]; then
+  err "Harus dijalankan sebagai root!"
+  exit 1
 fi
 
-# Dropbear & Stunnel4
-apt-get install -y dropbear stunnel4
+# ========== Lokasi Repositori ==========
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ETC_DIR="$REPO_ROOT/etc"
+SCRIPT_DIR="$REPO_ROOT/scripts"
+SYSTEMD_DIR="$REPO_ROOT/systemd"
+PANEL_DIR="$REPO_ROOT/opt/cartenz-panel"
+FIREWALL_DIR="$REPO_ROOT/firewall"
 
-# -------- Node.js (LTS) --------
-if ! command -v node >/dev/null 2>&1; then
-  log "Pasang Node.js 20 (NodeSource) ..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
+# ========== Fungsi Utilitas ==========
+aptx(){
+  apt-get update -y
+  apt-get install -y --no-install-recommends "$@"
+}
+enable_and_start(){
+  systemctl daemon-reload
+  systemctl enable "$1" >/dev/null 2>&1 || true
+  systemctl restart "$1" || systemctl start "$1" || true
+  systemctl is-active --quiet "$1" && ok "Service $1 aktif" || warn "Service $1 tidak aktif"
+}
+
+# ========== Deteksi OS ==========
+if [[ -f /etc/os-release ]]; then
+  . /etc/os-release
+  ok "OS: $PRETTY_NAME"
+else
+  warn "Tidak dapat mendeteksi OS!"
 fi
-log "Node.js: $(node -v), npm: $(npm -v)"
 
-# -------- XRAY --------
+# ========== Domain & Email ==========
+echo
+read -rp "Masukkan domain PANEL (mis: panel.cartenz-vpn.my.id): " PANEL_DOMAIN
+read -rp "Masukkan domain VPN (mis: vpn.cartenz-vpn.my.id): " VPN_DOMAIN
+read -rp "Masukkan email Certbot (default: admin@$VPN_DOMAIN): " CERTBOT_EMAIL
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-admin@$VPN_DOMAIN}"
+
+# ========== Install Paket Dasar ==========
+log "Instal paket dasar..."
+aptx nginx certbot python3-certbot-nginx dropbear stunnel4 nodejs npm ufw curl wget jq git unzip tar socat
+
+# ========== Restore Config NGINX ==========
+log "Restore konfigurasi NGINX..."
+mkdir -p /etc/nginx/conf.d
+cp -rf "$ETC_DIR/nginx/"* /etc/nginx/ || true
+
+# ========== Setup Dropbear ==========
+log "Konfigurasi Dropbear..."
+sed -i 's/^NO_START=.*/NO_START=0/' /etc/default/dropbear || true
+sed -i 's/^DROPBEAR_PORT=.*/DROPBEAR_PORT=109/' /etc/default/dropbear || echo "DROPBEAR_PORT=109" >> /etc/default/dropbear
+enable_and_start dropbear
+
+# ========== Restore Stunnel ==========
+log "Restore Stunnel..."
+mkdir -p /etc/stunnel
+cp -f "$ETC_DIR/stunnel/stunnel.conf" /etc/stunnel/stunnel.conf || true
+sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
+enable_and_start stunnel4
+
+# ========== Restore Xray ==========
+log "Restore Xray..."
 if ! command -v xray >/dev/null 2>&1; then
-  log "Pasang XRAY ..."
-  bash <(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh) install || true
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ install
 fi
 mkdir -p /etc/xray
-# Domain file jika belum ada (akan di-overwrite bila ada di repo)
-if [[ -n "$DOMAIN" ]]; then
-  echo "$DOMAIN" >/etc/xray/domain || true
-fi
+cp -rf "$ETC_DIR/xray/"* /etc/xray/ || true
+enable_and_start xray
 
-# -------- badvpn-udpgw --------
-if ! command -v badvpn-udpgw >/dev/null 2>&1; then
-  log "Pasang badvpn-udpgw ..."
-  cd /usr/local/bin
-  ARCH="$(uname -m)"
-  URL=""
-  case "$ARCH" in
-    x86_64|amd64) URL="https://raw.githubusercontent.com/ambrop72/badvpn/master/badvpn-udpgw" ;; # fallback kecil; ganti bila punya mirror binari
-    aarch64|arm64) URL="https://raw.githubusercontent.com/ambrop72/badvpn/master/badvpn-udpgw" ;;
-    *) URL="https://raw.githubusercontent.com/ambrop72/badvpn/master/badvpn-udpgw" ;;
-  esac
-  curl -fsSL "$URL" -o badvpn-udpgw || true
-  chmod +x badvpn-udpgw || true
-fi
+# ========== Certbot ==========
+log "Setup TLS dengan Certbot..."
+systemctl stop nginx || true
+certbot certonly --standalone -d "$VPN_DOMAIN" -d "$PANEL_DOMAIN" -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot gagal, lanjutkan manual"
+systemctl start nginx || true
 
-# -------- Copy dari repo ke sistem --------
-REPO_DIR="$(pwd)"
-
-# A) scripts -> /usr/bin
-if [[ -d "$REPO_DIR/scripts" ]]; then
-  log "Restore scripts ke /usr/bin ..."
-  cp -av "$REPO_DIR/scripts/." /usr/bin/
-  chmod +x /usr/bin/* || true
-else
-  warn "Folder scripts/ tidak ditemukan, lewati."
-fi
-
-# B) nginx -> /etc/nginx
-if [[ -d "$REPO_DIR/nginx" ]]; then
-  log "Restore Nginx config ..."
-  # Buat subdirs bila ada
-  mkdir -p /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled
-  cp -av "$REPO_DIR/nginx/nginx.conf" /etc/nginx/ 2>/dev/null || true
-  cp -av "$REPO_DIR/nginx/proxy_params" /etc/nginx/ 2>/dev/null || true
-  cp -av "$REPO_DIR/nginx/mime.types" /etc/nginx/ 2>/dev/null || true
-  cp -av "$REPO_DIR/nginx/uwsgi_params" /etc/nginx/ 2>/dev/null || true
-  cp -av "$REPO_DIR/nginx/fastcgi_params" /etc/nginx/ 2>/dev/null || true
-  if [[ -d "$REPO_DIR/nginx/conf.d" ]]; then
-    cp -av "$REPO_DIR/nginx/conf.d/." /etc/nginx/conf.d/
-  fi
-  if [[ -d "$REPO_DIR/nginx/sites-available" ]]; then
-    cp -av "$REPO_DIR/nginx/sites-available/." /etc/nginx/sites-available/
-  fi
-else
-  warn "Folder nginx/ tidak ditemukan, lewati restore config."
-fi
-
-# C) xray -> /etc/xray
-if [[ -d "$REPO_DIR/xray" ]]; then
-  log "Restore XRAY config ..."
-  cp -av "$REPO_DIR/xray/." /etc/xray/
-fi
-
-# D) systemd -> /etc/systemd/system
-if [[ -d "$REPO_DIR/systemd" ]]; then
-  log "Restore unit systemd ..."
-  cp -av "$REPO_DIR/systemd/." /etc/systemd/system/
-fi
-
-# E) panel -> /opt/cartenz-panel
-if [[ -d "$REPO_DIR/panel" ]]; then
-  log "Restore panel ke /opt/cartenz-panel ..."
-  rsync -a --delete \
-    --exclude 'node_modules' \
-    --exclude '.env' \
-    "$REPO_DIR/panel/" /opt/cartenz-panel/
-  mkdir -p /opt/cartenz-panel
-  cd /opt/cartenz-panel
-  if [[ -f package-lock.json ]]; then
-    npm ci --omit=dev
-  else
-    npm i --omit=dev
-  fi
-  # ENV
-  if [[ ! -f /etc/cartenz-panel.env ]]; then
-    if [[ -f "$REPO_DIR/panel/.env.example" ]]; then
-      cp -av "$REPO_DIR/panel/.env.example" /etc/cartenz-panel.env
-    else
-      touch /etc/cartenz-panel.env
-    fi
-    # Patch default port & session secret
-    if ! grep -q '^PORT=' /etc/cartenz-panel.env 2>/dev/null; then
-      echo "PORT=$PANEL_PORT" >> /etc/cartenz-panel.env
-    else
-      sed -i "s/^PORT=.*/PORT=$PANEL_PORT/" /etc/cartenz-panel.env
-    fi
-    if ! grep -q '^SESSION_SECRET=' /etc/cartenz-panel.env 2>/dev/null; then
-      echo "SESSION_SECRET=$(openssl rand -hex 32)" >> /etc/cartenz-panel.env
-    fi
-  else
-    # Sinkronkan port bila perlu
-    sed -i "s/^PORT=.*/PORT=$PANEL_PORT/" /etc/cartenz-panel.env || true
-  fi
-else
-  warn "Folder panel/ tidak ditemukan. Lewati deploy panel."
-fi
-
-# F) firewall (opsional)
-if [[ -f "$REPO_DIR/firewall/iptables.up.rules" ]]; then
-  log "Restore iptables rules ..."
-  cp -av "$REPO_DIR/firewall/iptables.up.rules" /etc/iptables.up.rules
-fi
-
-# -------- Nginx site untuk panel (jika tidak tersedia di repo) --------
-DEFAULT_SITE="/etc/nginx/sites-available/cartenz-panel.conf"
-if [[ ! -f "$DEFAULT_SITE" ]]; then
-  if [[ -z "$DOMAIN" ]]; then
-    warn "DOMAIN kosong dan site Nginx tidak ditemukan. Buat site default untuk 127.0.0.1 ..."
-    cat >"$DEFAULT_SITE" <<EOF
+# ========== NGINX untuk Panel & Xray ==========
+log "Konfigurasi NGINX site..."
+cat >/etc/nginx/sites-available/cartenz-panel.conf <<EOF
 server {
-  listen 80;
-  server_name _;
-  client_max_body_size 20m;
-
-  location / {
-    proxy_pass http://127.0.0.1:${PANEL_PORT};
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-  }
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name $PANEL_DOMAIN;
+    ssl_certificate /etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
 }
 EOF
-  else
-    log "Buat site Nginx untuk domain ${DOMAIN} ..."
-    cat >"$DEFAULT_SITE" <<EOF
-server {
-  listen 80;
-  server_name ${DOMAIN};
-  client_max_body_size 20m;
 
-  location / {
-    proxy_pass http://127.0.0.1:${PANEL_PORT};
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-  }
+cat >/etc/nginx/conf.d/xray.conf <<EOF
+server {
+    listen 443 ssl http2;
+    server_name $VPN_DOMAIN;
+    ssl_certificate /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:10000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+    }
 }
 EOF
-  fi
+
+nginx -t && enable_and_start nginx
+
+# ========== Firewall ==========
+log "Restore firewall..."
+if [[ -f "$FIREWALL_DIR/iptables.up.rules" ]]; then
+  cp -f "$FIREWALL_DIR/iptables.up.rules" /etc/iptables.up.rules
+  iptables-restore < /etc/iptables.up.rules || warn "Gagal menerapkan iptables"
 fi
-ln -sf "$DEFAULT_SITE" /etc/nginx/sites-enabled/cartenz-panel.conf
+ufw allow 80,443/tcp
+ufw allow 109/tcp
+ufw --force enable || true
 
-# -------- Systemd unit untuk panel (jika tidak ada di repo) --------
-if [[ ! -f /etc/systemd/system/cartenz-panel.service ]]; then
-  log "Buat unit cartenz-panel.service ..."
-  cat >/etc/systemd/system/cartenz-panel.service <<'EOF'
-[Unit]
-Description=Cartenz VPN Panel
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=-/etc/cartenz-panel.env
-WorkingDirectory=/opt/cartenz-panel
-ExecStart=/usr/bin/node /opt/cartenz-panel/server.cjs
-Restart=always
-RestartSec=3
-User=root
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF
-fi
-
-# -------- Systemd badvpn (jika belum ada) --------
-if [[ ! -f /etc/systemd/system/badvpn-udpgw.service ]]; then
-  log "Buat unit badvpn-udpgw.service ..."
-  cat >/etc/systemd/system/badvpn-udpgw.service <<'EOF'
-[Unit]
-Description=BadVPN UDPGW Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:7100 --max-clients 2048
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-fi
-
-# -------- Enable & start services --------
-log "Enable & start services ..."
+# ========== Restore Systemd Services ==========
+log "Restore file service systemd..."
+cp -rf "$SYSTEMD_DIR/"*.service /etc/systemd/system/ || true
 systemctl daemon-reload
-systemctl enable --now nginx || true
-systemctl enable --now xray || true
-systemctl enable --now dropbear || true
-systemctl enable --now stunnel4 || true
-systemctl enable --now badvpn-udpgw || true
-systemctl enable --now cartenz-panel || true
+for svc in cartenz-panel telebot ws-dropbear ws-stunnel xray; do
+  enable_and_start "$svc" || true
+done
 
-# -------- SSL (opsional) --------
-if [[ "$USE_SSL" == "yes" && -n "$DOMAIN" && -n "$EMAIL" ]]; then
-  log "Siapkan HTTPS untuk ${DOMAIN} ..."
-  # Pastikan Nginx jalan di :80
-  nginx -t && systemctl reload nginx || true
-  # Dapatkan sertifikat; bila plugin nginx gagal, fallback certonly
-  if certbot --nginx -d "$DOMAIN" -n --agree-tos -m "$EMAIL" --redirect; then
-    log "Sertifikat berhasil dipasang via nginx plugin."
-  else
-    warn "Gagal memasang otomatis via --nginx, coba certonly ..."
-    certbot certonly --webroot -w /var/www/html -d "$DOMAIN" -n --agree-tos -m "$EMAIL" || true
-    if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
-      warn "Sertifikat didapat. Sesuaikan blok SSL Nginx (jika perlu) dan reload."
-    else
-      warn "Sertifikat belum tersedia. Periksa DNS dan ulangi certbot nanti."
-    fi
-  fi
-  systemctl restart nginx || true
+# ========== Restore Panel ==========
+log "Setup panel Cartenz..."
+mkdir -p /opt/cartenz-panel
+rsync -a --delete "$PANEL_DIR"/ /opt/cartenz-panel/
+pushd /opt/cartenz-panel >/dev/null
+npm ci --omit=dev || npm install --omit=dev
+popd >/dev/null
+enable_and_start cartenz-panel
+
+# ========== Pasang Semua Skrip ==========
+log "Menyalin semua skrip ke /usr/bin..."
+install -m 0755 -D "$SCRIPT_DIR"/* /usr/bin/
+
+# ========== Jalankan Menu ==========
+if [[ -x /usr/bin/menu ]]; then
+  clear
+  /usr/bin/menu
 else
-  warn "SSL dilewati (gunakan --domain & --email tanpa --no-ssl untuk otomatis HTTPS)."
+  ok "Selesai restore, tapi /usr/bin/menu belum ditemukan."
 fi
 
-# -------- Validasi akhir --------
-log "Validasi konfigurasi Nginx ..."
-nginx -t && systemctl reload nginx || true
-
-log "Restart XRAY & Panel ..."
-systemctl restart xray || true
-systemctl restart cartenz-panel || true
-
-# -------- Ringkasan --------
-PADDR="$(hostname -I 2>/dev/null | awk '{print $1}')"
-log "Selesai ✨"
-echo "-----------------------------------------"
-echo "Panel:       http://${DOMAIN:-$PADDR}/"
-if [[ -n "$DOMAIN" && "$USE_SSL" == "yes" ]]; then
-  echo "(Jika HTTPS aktif) https://${DOMAIN}/"
-fi
-echo "Panel port:  ${PANEL_PORT} (internal, via Nginx reverse proxy)"
-echo "XRAY:        systemctl status xray"
-echo "Dropbear:    systemctl status dropbear"
-echo "Stunnel4:    systemctl status stunnel4"
-echo "BadVPN:      systemctl status badvpn-udpgw"
-echo "Nginx:       systemctl status nginx"
-echo "-----------------------------------------"
-echo "Tips:"
-echo "- Ubah /etc/cartenz-panel.env lalu: systemctl restart cartenz-panel"
-echo "- Edit Nginx di /etc/nginx/..., lalu: nginx -t && systemctl reload nginx"
-echo "- Untuk SSL ulang: certbot --nginx -d ${DOMAIN:-your.domain} -m ${EMAIL:-you@email}"
+# ========== Ringkasan ==========
+echo
+echo -e "${W}=== Ringkasan Instalasi ===${C0}"
+systemctl is-active --quiet xray           && ok "xray aktif" || warn "xray tidak aktif"
+systemctl is-active --quiet nginx          && ok "nginx aktif" || warn "nginx tidak aktif"
+systemctl is-active --quiet stunnel4       && ok "stunnel aktif" || warn "stunnel tidak aktif"
+systemctl is-active --quiet dropbear       && ok "dropbear aktif" || warn "dropbear tidak aktif"
+systemctl is-active --quiet cartenz-panel  && ok "cartenz-panel aktif" || warn "cartenz-panel tidak aktif"
+echo
+echo -e "${G}Panel URL: https://$PANEL_DOMAIN${C0}"
+echo -e "${G}VPN Host : $VPN_DOMAIN${C0}"
+echo
