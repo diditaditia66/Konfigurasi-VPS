@@ -25,39 +25,32 @@ SCRIPT_DIR="$REPO_ROOT/scripts"
 SYSTEMD_DIR="$REPO_ROOT/systemd"
 PANEL_DIR="$REPO_ROOT/opt/cartenz-panel"
 FIREWALL_DIR="$REPO_ROOT/firewall"
+LOG_FILE="/root/log-install.txt"
 
 # ======== Input ========
 ask(){
-  local p="$1" def="${2:-}" v; 
+  local p="$1" def="${2:-}" v;
   if [[ -n "${def}" ]]; then read -rp "$p [$def]: " v; v="${v:-$def}";
   else read -rp "$p: " v; fi
   echo "$v"
 }
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
 VPN_DOMAIN="${VPN_DOMAIN:-}"
-CERTBOT_EMAIL_DEFAULT=""
-if [[ -z "${PANEL_DOMAIN}" ]]; then
-  echo -e "${W}=== Pengaturan Domain ===${C0}"
-  PANEL_DOMAIN="$(ask 'Domain Panel (mis: panel.cartenz-vpn.my.id)')"
-fi
-if [[ -z "${VPN_DOMAIN}" ]]; then
-  VPN_DOMAIN="$(ask 'Domain VPN (mis: vpn.cartenz-vpn.my.id)')"
-fi
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
-CERTBOT_EMAIL_DEFAULT="admin@${VPN_DOMAIN}"
-if [[ -z "${CERTBOT_EMAIL}" ]]; then
-  CERTBOT_EMAIL="$(ask "Email Certbot" "$CERTBOT_EMAIL_DEFAULT")"
+
+if [[ -z "$PANEL_DOMAIN" || -z "$VPN_DOMAIN" ]]; then
+  echo -e "${W}=== Pengaturan Domain ===${C0}"
+  [[ -z "$PANEL_DOMAIN" ]] && PANEL_DOMAIN="$(ask 'Domain Panel (mis: panel.cartenz-vpn.my.id)')"
+  [[ -z "$VPN_DOMAIN"   ]] && VPN_DOMAIN="$(ask 'Domain VPN (mis: vpn.cartenz-vpn.my.id)')"
 fi
+[[ -z "$CERTBOT_EMAIL" ]] && CERTBOT_EMAIL="$(ask "Email Certbot" "admin@${VPN_DOMAIN}")"
 
 ok "Panel domain: $PANEL_DOMAIN"
 ok "VPN domain  : $VPN_DOMAIN"
 ok "Email       : $CERTBOT_EMAIL"
 
 # ======== Util ========
-aptx(){
-  apt-get update -y
-  apt-get install -y --no-install-recommends "$@"
-}
+aptx(){ apt-get update -y; apt-get install -y --no-install-recommends "$@"; }
 enable_and_start(){
   local svc="$1"
   systemctl daemon-reload
@@ -68,7 +61,7 @@ enable_and_start(){
 
 # ======== Paket dasar ========
 log "Install paket dasar…"
-aptx ca-certificates curl wget gnupg lsb-release jq git unzip tar sudo ufw socat rsync net-tools \
+aptx ca-certificates curl wget gnupg lsb-release jq git unzip tar sudo ufw socat rsync net-tools openssl \
     nginx dropbear stunnel4 certbot python3-certbot-nginx nodejs npm
 
 # ======== NGINX bootstrap untuk HTTP-01 ========
@@ -129,39 +122,26 @@ if ! command -v xray >/dev/null 2>&1; then
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ install
 fi
 mkdir -p /etc/xray
-# domain files untuk kompatibilitas skrip lama
 echo "$VPN_DOMAIN" >/etc/xray/domain
 echo "$VPN_DOMAIN" >/etc/xray/scdomain 2>/dev/null || true
-
-# sertifikat symlink (nanti ada setelah certbot)
 ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem" "/etc/xray/xray.crt" || true
 ln -sf "/etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem"  "/etc/xray/xray.key" || true
-
-# restore config.json bila ada
 if [[ -f "$ETC_DIR/xray/config.json" ]]; then
   cp -f "$ETC_DIR/xray/config.json" /etc/xray/config.json
   sed -i "s/sgdo\.anya-vpn\.my\.id/$VPN_DOMAIN/g" /etc/xray/config.json || true
   sed -i "s/domain_placeholder/$VPN_DOMAIN/g" /etc/xray/config.json || true
 else
-  warn "etc/xray/config.json tidak ditemukan — akan gunakan bawaan installer."
+  warn "etc/xray/config.json tidak ditemukan — gunakan bawaan installer bila ada."
   [[ -f /usr/local/etc/xray/config.json ]] && cp -f /usr/local/etc/xray/config.json /etc/xray/config.json || true
 fi
+[[ -f "$SYSTEMD_DIR/xray.service" ]] && cp -f "$SYSTEMD_DIR/xray.service" /etc/systemd/system/xray.service
 
-# pasang unit dari repo jika ada
-if [[ -f "$SYSTEMD_DIR/xray.service" ]]; then
-  cp -f "$SYSTEMD_DIR/xray.service" /etc/systemd/system/xray.service
-fi
-
-# ======== Certbot dua domain (stop layanan yang pakai 80/443 dulu) ========
+# ======== Certbot dua domain (standalone) ========
 log "Issue sertifikat TLS untuk Panel & VPN…"
-systemctl stop nginx || true
-systemctl stop xray  || true
-systemctl stop stunnel4 || true
+systemctl stop nginx xray stunnel4 || true
 sleep 1
-# Single cert untuk dua domain, via standalone HTTP-01
 certbot certonly --standalone -d "$PANEL_DOMAIN" -d "$VPN_DOMAIN" -m "$CERTBOT_EMAIL" --agree-tos -n || warn "Certbot gagal — bisa coba ulang manual"
-systemctl start nginx || true
-systemctl start stunnel4 || true
+systemctl start nginx stunnel4 || true
 
 # ======== NGINX Xray & Panel ========
 log "Terapkan konfigurasi NGINX (Xray & Panel)…"
@@ -182,7 +162,6 @@ server {
     ssl_certificate     /etc/letsencrypt/live/$VPN_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$VPN_DOMAIN/privkey.pem;
 
-    # Contoh mapping upstream ws Xray
     location /vmess {
         proxy_pass http://127.0.0.1:10000;
         proxy_http_version 1.1;
@@ -267,7 +246,7 @@ WantedBy=multi-user.target
 EOF
 fi
 
-# ======== Restore systemd lain dari repo (opsional) ========
+# Restore systemd lain dari repo (opsional: ws-dropbear, telebot, dll)
 if compgen -G "$SYSTEMD_DIR/*.service" >/dev/null 2>&1; then
   cp -f "$SYSTEMD_DIR/"*.service /etc/systemd/system/
 fi
@@ -345,9 +324,11 @@ enable_and_start stunnel4
 enable_and_start xray
 enable_and_start ws-stunnel
 enable_and_start cartenz-panel
+# aktifkan ws-dropbear bila ada unitnya
+if systemctl list-unit-files | grep -q '^ws-dropbear.service'; then enable_and_start ws-dropbear; fi
 # telebot opsional—jangan dipaksa start
 if systemctl list-unit-files | grep -q '^telebot.service'; then
-  warn "telebot diarahkan untuk tetap nonaktif (opsional)."
+  warn "telebot dibiarkan nonaktif (opsional)."
 fi
 
 # ======== Auto MENU saat login ========
@@ -367,7 +348,7 @@ echo
 echo -e "${W}==============================${C0}"
 echo -e "${W}  RINGKASAN INSTALASI CARTENZ ${C0}"
 echo -e "${W}==============================${C0}"
-for s in xray nginx stunnel4 dropbear ws-stunnel cartenz-panel; do
+for s in xray nginx stunnel4 dropbear ws-stunnel ws-dropbear cartenz-panel; do
   if systemctl is-active --quiet "$s"; then ok "$s : active"; else err "$s : INACTIVE"; fi
 done
 echo
@@ -376,7 +357,11 @@ echo -e "${G}VPN Host  : $VPN_DOMAIN${C0}"
 echo -e "${Y}Jika issuance TLS gagal, ulang manual:\n  systemctl stop nginx xray stunnel4 && certbot certonly --standalone -d $PANEL_DOMAIN -d $VPN_DOMAIN -m $CERTBOT_EMAIL --agree-tos -n && systemctl start nginx stunnel4 xray${C0}"
 echo
 
-# ======== Reboot ========
+# ======== Simpan catatan & Reboot ========
+echo "Cartenz Install — $(date)" > "$LOG_FILE"
+echo "Panel: https://${PANEL_DOMAIN}" >> "$LOG_FILE"
+echo "VPN  : ${VPN_DOMAIN}" >> "$LOG_FILE"
+
 echo -e "${W}Reboot VPS untuk finalisasi. Setelah login, menu akan tampil otomatis.${C0}"
 sleep 3
 /sbin/reboot
